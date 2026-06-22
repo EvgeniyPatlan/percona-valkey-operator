@@ -1,0 +1,17 @@
+# tests/restore/07-restore.yaml  (TestStep)
+# Apply a PerconaValkeyRestore referencing backup1 (backupName XOR backupSource —
+# exactly one, arch §2.2 restore). InPlace loads the RDB back into the existing
+# cluster (the self-contained variant); NewCluster would bootstrap a fresh,
+# slot-coverage-verified cluster. kuttl applies the CR document below.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 60
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyRestore
+metadata:
+  name: restore1
+spec:
+  clusterName: cluster1
+  backupName: backup1
+  strategy: InPlace

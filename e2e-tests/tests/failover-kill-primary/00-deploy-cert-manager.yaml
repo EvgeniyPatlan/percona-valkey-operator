@@ -1,0 +1,11 @@
+# tests/failover-kill-primary/00-deploy-cert-manager.yaml  (TestStep)
+# Chaos smoke case (run-pr.csv). Setup mirrors init-cluster: cert-manager first
+# (operator TLS depends on it). See README.md for the full scenario.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      deploy_cert_manager

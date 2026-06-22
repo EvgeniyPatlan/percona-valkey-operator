@@ -1,0 +1,22 @@
+# tests/restore/07-assert.yaml  (TestAssert)
+# The restore reaches terminal Succeeded and the cluster is healthy again.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 600
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyRestore
+metadata:
+  name: restore1
+status:
+  state: Succeeded
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+status:
+  state: Ready
+  conditions:
+    - type: Ready
+      status: "True"

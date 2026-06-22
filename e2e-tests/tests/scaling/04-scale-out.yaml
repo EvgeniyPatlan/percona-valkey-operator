@@ -1,0 +1,13 @@
+# tests/scaling/04-scale-out.yaml  (TestStep)
+# Scale out 3 → 6 shards. The operator rebalances slots one PlanRebalanceMove per
+# reconcile (CLUSTER MIGRATESLOTS — Valkey 9.0+, hence this case is 9.0-only,
+# arch §3.2/§5). We only patch the spec here; the paired assert waits for the
+# rebalance to converge.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      kube patch pvk cluster1 --type=merge -p '{"spec":{"shards":6}}'

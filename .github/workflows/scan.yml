@@ -7,6 +7,21 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs on the same ref to save runner time.
+concurrency:
+  group: scan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Security scanning (docs/architecture/11-testing-qa.md §6.1):
+#   - gosec        — SAST; HIGH findings BLOCK the PR.
+#   - govulncheck  — known-vuln check; advisory (non-blocking) until a severity policy
+#                    is pinned (build-requirements OPEN QUESTION).
+#   - trivy        — filesystem CVE scan; advisory here (the authoritative image scan
+#                    runs in the image-build pipeline). Severity policy: warn now, gate at GA.
+# gosec/govulncheck mirror the `make scan` targets so local (./bin) and CI red/green agree.
+#
+# Third-party actions are pinned to release tags (not @master) so a scanning workflow —
+# the one place a supply-chain compromise would be most damaging — does not float HEAD.
 jobs:
   gosec:
     name: gosec (HIGH-severity blocking)
@@ -18,15 +33,17 @@ jobs:
           go-version-file: .go-version
           cache: true
       - name: gosec
-        uses: securego/gosec@master
+        uses: securego/gosec@v2.21.4
         with:
-          # -severity high makes only HIGH findings fail the job
-          # (docs/architecture/11-testing-qa.md §6.1).
+          # -severity high makes only HIGH findings fail the job; -no-fail would
+          # downgrade to advisory. HIGH is PR-blocking per §6.1.
           args: -severity high ./...
 
   govulncheck:
     name: govulncheck (advisory)
     runs-on: ubuntu-latest
+    # Advisory until a severity policy is pinned (impl §13 open question). Flip
+    # continue-on-error to false to make known-vuln findings PR-blocking at GA.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -36,5 +53,23 @@ jobs:
           cache: true
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  trivy:
+    name: trivy filesystem CVE scan (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: trivy fs
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          # Advisory until the GA severity policy is pinned; the authoritative image
+          # scan runs in the image-build pipeline. Report CRITICAL/HIGH but do not
+          # fail the PR yet (exit-code 0). Flip exit-code to 1 to gate at GA.
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+          ignore-unfixed: true

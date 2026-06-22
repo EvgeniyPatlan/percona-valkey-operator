@@ -1,0 +1,36 @@
+# tests/config-rolling-update/03-assert.yaml  (TestAssert)
+# The restart-key change rolled the cluster: the pod-template config-hash
+# annotation CHANGED from the snapshot, the ConfigMap now carries appendonly yes,
+# the StatefulSets rolled (observedGeneration caught up, all replicas updated),
+# and the cluster reconverged to Ready. This is the headline "restart key → roll"
+# half of the config-hash discipline (arch §2.2 item 5).
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 600
+commands:
+  - script: |-
+      source ../../functions
+      HASH_ANN='valkey.percona.com/server-config-hash'
+      before="$(cat /tmp/cru-restart-hash-before.txt)"
+      after="$(kube get statefulset valkey-cluster1-0-1 \
+        -o "jsonpath={.spec.template.metadata.annotations['${HASH_ANN//./\\.}']}")"
+      test -n "$after" || { echo "config-hash annotation missing after roll" >&2; exit 1; }
+      test "$before" != "$after" || {
+        echo "restart-requiring key did NOT change the roll hash (before=after=${after})" >&2
+        exit 1
+      }
+      # The change actually reached the rendered config the pods load.
+      kube get configmap valkey-cluster1 -o yaml | grep -q 'appendonly yes'
+      # Cluster healthy again post-roll.
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_state:ok'
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+status:
+  state: Ready
+  conditions:
+    - type: Ready
+      status: "True"

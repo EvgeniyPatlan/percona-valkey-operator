@@ -1,0 +1,12 @@
+# tests/partition/02-create-cluster.yaml  (TestStep)
+# Durable 3-shard x 1-replica cluster. Quorum is held by the 2 unaffected shards while
+# 1 primary is partitioned, so the operator must NOT issue TAKEOVER (split-brain
+# avoidance — arch §4.1 row 4).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      apply_cluster "${CONF_DIR}/cr-cluster.yaml"

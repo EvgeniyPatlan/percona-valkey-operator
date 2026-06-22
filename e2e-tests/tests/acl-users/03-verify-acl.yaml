@@ -1,0 +1,35 @@
+# tests/acl-users/03-verify-acl.yaml  (TestStep)
+# Verify the ACL is provisioned and enforced on the live engine:
+#   - ACL GETUSER app shows the rendered rule (the user exists with key scope).
+#   - As user "app" an ALLOWED op on an app:* key succeeds.
+#   - As user "app" a DENIED command (FLUSHALL) is rejected with NOPERM.
+# We exec directly (the shared exec_valkey auth-flag resolution is TODO OPS-8.1)
+# and authenticate as app with pass1.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 180
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      pod="$(kube get pod \
+        -l app.kubernetes.io/instance=cluster1,app.kubernetes.io/name=percona-valkey \
+        -o jsonpath='{.items[0].metadata.name}')"
+      test -n "$pod" || { echo "no valkey pod for cluster1" >&2; exit 1; }
+      APP_PASS=p4ss-one
+      # 1) The user exists with its rendered rule. Run ACL GETUSER as the operator
+      #    (its credentials are mounted; if that fails, fall back to a plain call).
+      kube exec "$pod" -c valkey -- sh -c \
+        "valkey-cli --no-auth-warning ACL GETUSER app || valkey-cli ACL GETUSER app" \
+        | grep -qi 'commands' || {
+          echo "ACL GETUSER app did not return a rendered rule" >&2; exit 1; }
+      # 2) Allowed op as app succeeds (-c follows MOVED to the owning shard).
+      kube exec "$pod" -c valkey -- \
+        valkey-cli -c --user app --pass "$APP_PASS" --no-auth-warning \
+        SET app:k1 v1 | grep -q 'OK'
+      # 3) Denied command (FLUSHALL) is rejected for app — expect NOPERM/permission.
+      out="$(kube exec "$pod" -c valkey -- \
+        valkey-cli --user app --pass "$APP_PASS" --no-auth-warning FLUSHALL 2>&1 || true)"
+      echo "$out" | grep -qiE 'NOPERM|no permission|has no permissions' || {
+        echo "FLUSHALL was NOT denied for app (got: ${out})" >&2; exit 1; }
+      echo "OK: ACL provisioned; allowed op succeeded; FLUSHALL denied"

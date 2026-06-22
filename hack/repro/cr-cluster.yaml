@@ -1,0 +1,19 @@
+# hack/repro/cr-cluster.yaml — the PerconaValkeyCluster CR under test (TEMPLATE).
+#
+# Laptop-sized: 3 shards × 1 replica = 6 pods, small requests, 1Gi PVCs. Adapt per issue
+# (e.g. a cache-mode no-persistence shard for the quorum-loss TAKEOVER repro). Uses the
+# dev image tags (perconalab/*:main) so 01-setup.sh works against the repo bundle.
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+spec:
+  image: perconalab/percona-valkey:main
+  mode: cluster
+  shards: 3
+  replicas: 1
+  workloadType: StatefulSet
+  persistence:
+    size: 1Gi
+  resources:
+    requests: { cpu: "100m", memory: 256Mi }

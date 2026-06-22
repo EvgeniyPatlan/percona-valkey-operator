@@ -1,0 +1,12 @@
+# tests/slot-migration-interrupt/03-seed-data.yaml  (TestStep)
+# Seed data so 05-assert can prove no slot/data loss across the interrupted migration.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      for i in $(seq 1 100); do
+        exec_valkey cluster1 -c SET "e2e:smi:key:${i}" "val-${i}"
+      done

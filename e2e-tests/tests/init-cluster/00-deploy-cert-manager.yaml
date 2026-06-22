@@ -1,0 +1,10 @@
+# tests/init-cluster/00-deploy-cert-manager.yaml  (TestStep)
+# Reference case — the legs model the other cases on this NN-step/NN-assert pattern.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      deploy_cert_manager

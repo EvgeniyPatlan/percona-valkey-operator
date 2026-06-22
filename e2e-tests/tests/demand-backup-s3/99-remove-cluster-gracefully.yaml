@@ -1,0 +1,15 @@
+# tests/demand-backup-s3/99-remove-cluster-gracefully.yaml  (TestStep)
+# Graceful teardown. Delete the backup CRs first (their percona.com/delete-backup
+# finalizer GCs artifacts), then the cluster. The backup ARTIFACT outlives the
+# cluster by design (it is not cluster-owned), so deleting backup1 explicitly
+# exercises the finalizer-driven artifact cleanup before namespace GC.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 240
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      kube delete pvk-backup backup-typo --ignore-not-found --wait=true --timeout=60s
+      kube delete pvk-backup backup1 --ignore-not-found --wait=true --timeout=120s
+      kube delete pvk cluster1 --wait=true --timeout=150s

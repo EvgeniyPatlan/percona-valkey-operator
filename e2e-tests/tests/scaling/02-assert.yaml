@@ -1,0 +1,21 @@
+# tests/scaling/02-assert.yaml  (TestAssert)
+# The 3-shard cluster forms: state=Ready with ClusterFormed/SlotsAssigned/Ready
+# conditions True, and status.shards reflects the 3 formed shards.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 600
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+status:
+  state: Ready
+  shards: 3
+  conditions:
+    - type: ClusterFormed
+      status: "True"
+    - type: SlotsAssigned
+      status: "True"
+    - type: Ready
+      status: "True"

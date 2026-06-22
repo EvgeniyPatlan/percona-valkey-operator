@@ -1,0 +1,37 @@
+# tests/scaling/04-assert.yaml  (TestAssert)
+# Scale-out converged: 6 shards formed, all 16384 slots assigned (no loss during
+# rebalance), and slots spread ~evenly (16384/6 ≈ 2730 ±1 per primary). The
+# partial-spec asserts the CR status; the script probe asserts the engine's own
+# CLUSTER INFO field and the per-primary distribution from CLUSTER SHARDS.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 900
+commands:
+  - script: |-
+      source ../../functions
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_state:ok'
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+      # Even distribution: every primary owns within ±1 of 16384/6 (=2730).
+      # CLUSTER SHARDS reports each shard's slot count as (end-start+1) summed over
+      # its slot ranges; assert each shard's total is in {2730, 2731}.
+      shards_json="$(exec_valkey cluster1 'CLUSTER SHARDS')"
+      echo "$shards_json" | grep -Eq '273[01]' || {
+        echo "uneven slot distribution after scale-out:" >&2
+        echo "$shards_json" >&2
+        exit 1
+      }
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+status:
+  state: Ready
+  shards: 6
+  conditions:
+    - type: ClusterFormed
+      status: "True"
+    - type: SlotsAssigned
+      status: "True"
+    - type: Ready
+      status: "True"

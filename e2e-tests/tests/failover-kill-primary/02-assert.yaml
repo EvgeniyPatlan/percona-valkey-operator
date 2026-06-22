@@ -1,0 +1,19 @@
+# tests/failover-kill-primary/02-assert.yaml  (TestAssert)
+# Cluster forms: state=Ready with ClusterFormed/SlotsAssigned/Ready conditions True.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 600
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+status:
+  state: Ready
+  conditions:
+    - type: ClusterFormed
+      status: "True"
+    - type: SlotsAssigned
+      status: "True"
+    - type: Ready
+      status: "True"

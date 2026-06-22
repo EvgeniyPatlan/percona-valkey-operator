@@ -1,0 +1,32 @@
+# tests/config-rolling-update/04-assert.yaml  (TestAssert)
+# The live-key change did NOT roll: the config-hash annotation is UNCHANGED, yet
+# the value is applied live via CONFIG SET (CONFIG GET maxmemory reflects 200mb).
+# This is the "live key → no roll" half of the config-hash discipline — the
+# single highest-value invariant of this case (arch §2.2 item 5).
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 300
+commands:
+  - script: |-
+      source ../../functions
+      HASH_ANN='valkey.percona.com/server-config-hash'
+      before="$(cat /tmp/cru-live-hash-before.txt)"
+      after="$(kube get statefulset valkey-cluster1-0-1 \
+        -o "jsonpath={.spec.template.metadata.annotations['${HASH_ANN//./\\.}']}")"
+      test "$before" = "$after" || {
+        echo "live-settable key CHANGED the roll hash (before=${before} after=${after})" >&2
+        exit 1
+      }
+      # Value applied live: CONFIG GET maxmemory == 200mb (209715200 bytes).
+      exec_valkey cluster1 CONFIG GET maxmemory | grep -q '209715200'
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_state:ok'
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+status:
+  state: Ready
+  conditions:
+    - type: Ready
+      status: "True"

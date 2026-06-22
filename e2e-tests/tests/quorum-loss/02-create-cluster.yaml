@@ -1,0 +1,12 @@
+# tests/quorum-loss/02-create-cluster.yaml  (TestStep)
+# Cache-mode 1-shard primary+replica (conf/cr-cache.yaml). Killing BOTH pods of the
+# only shard removes every slot owner with no replica to promote — the genuine
+# quorum-loss stuck state this NEGATIVE case proves the operator surfaces honestly.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      apply_cluster "${TEST_DIR}/conf/cr-cache.yaml"

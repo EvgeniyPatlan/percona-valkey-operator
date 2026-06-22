@@ -1,0 +1,46 @@
+# tests/failover-takeover/04-assert.yaml  (TestAssert)
+# Recovery via the operator's OWN orphan-promote path (the only case it issues
+# TAKEOVER). promoteOrphanedReplicas runs because HasFailoverQuorum()==false AND
+# spec.persistence==nil: it picks BestReplicaOf (highest slave_repl_offset) and issues
+# CLUSTER FAILOVER TAKEOVER, issued BEFORE CLUSTER FORGET so slots stay owned (no
+# coverage gap). Arch §4.1 row 2 / data-plane §285-286.
+#
+# kuttl runs the script AND the declarative status match; both must pass before the
+# timeout.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # OPEN QUESTION #10: the event for this path is doc-contested — data-plane §286 +
+      # testing-qa §4.1 say ReplicasTakenOver (and the §4.1 table says explicitly NOT
+      # FailoverInitiated), control-plane §67 says FailoverInitiated. Accept EITHER so
+      # this assert is not brittle to the doc-resolution outcome.
+      kube get events -o jsonpath='{.items[*].reason}' \
+        | grep -Eq 'ReplicasTakenOver|FailoverInitiated'
+      # No coverage gap: all 16384 slots remain owned through and after the promotion.
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_state:ok'
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+      # A primary still exists post-TAKEOVER ('master' is verbatim engine wire output).
+      exec_valkey cluster1 CLUSTER NODES | grep -q 'master'
+      # Data seeded in 03 survives the promotion (the replica was synced before kill).
+      for i in $(seq 1 30); do
+        got="$(exec_valkey cluster1 -c GET "e2e:fto:key:${i}")"
+        test "$got" = "val-${i}" || { echo "data loss at key ${i}: got '${got}'" >&2; exit 1; }
+      done
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+status:
+  state: Ready
+  conditions:
+    - type: ClusterFormed
+      status: "True"
+    - type: SlotsAssigned
+      status: "True"
+    - type: Ready
+      status: "True"

@@ -1,0 +1,38 @@
+# tests/tls/03-verify-tls.yaml  (TestStep)
+# Prove the channel is genuinely TLS-only: a valkey-cli probe WITH --tls (and the
+# mounted CA) succeeds, while the same probe WITHOUT --tls is refused (the server
+# renders port=0 / tls-port=6379, so plaintext has no listener). We exec directly
+# rather than via exec_valkey because the shared helper's TLS/auth flag resolution
+# is still TODO(OPS-8.1); here we add the flags explicitly against the contract
+# mount path /etc/valkey/tls.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 180
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      pod="$(kube get pod \
+        -l app.kubernetes.io/instance=cluster1,app.kubernetes.io/name=percona-valkey \
+        -o jsonpath='{.items[0].metadata.name}')"
+      test -n "$pod" || { echo "no valkey pod found for cluster1" >&2; exit 1; }
+      CA=/etc/valkey/tls/ca.crt
+      CERT=/etc/valkey/tls/tls.crt
+      KEY=/etc/valkey/tls/tls.key
+      # Best-effort default-user password (auth defaults to enabled). If absent the
+      # probe runs unauthenticated, which still proves the TLS handshake.
+      PASS="$(kube get secret cluster1-users -o jsonpath='{.data.\_default}' 2>/dev/null | base64 -d 2>/dev/null || true)"
+      authflag=""
+      [ -n "$PASS" ] && authflag="-a $PASS --no-auth-warning"
+      # 1) TLS probe MUST succeed.
+      kube exec "$pod" -c valkey -- sh -c \
+        "valkey-cli --tls --cacert $CA --cert $CERT --key $KEY $authflag CLUSTER INFO" \
+        | grep -q 'cluster_state:ok'
+      # 2) Plaintext probe (no --tls) MUST be refused — invert the exit code so the
+      #    step passes only when the plaintext connection fails.
+      if kube exec "$pod" -c valkey -- sh -c \
+           "valkey-cli $authflag -t 3 PING" 2>/dev/null | grep -q 'PONG'; then
+        echo "plaintext PING succeeded — server is NOT TLS-only" >&2
+        exit 1
+      fi
+      echo "OK: TLS probe succeeded and plaintext was refused"

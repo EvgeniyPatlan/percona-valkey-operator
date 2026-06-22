@@ -1,0 +1,11 @@
+# tests/config-poison/02-create-cluster.yaml  (TestStep)
+# Durable 3-shard cluster (conf/cr-cluster.yaml). We poison a LIVE-settable key
+# (maxmemory) so the failure path is CONFIG SET (live), not a rolling restart.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      apply_cluster "${CONF_DIR}/cr-cluster.yaml"

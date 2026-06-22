@@ -1,0 +1,12 @@
+# tests/restore/99-remove-cluster-gracefully.yaml  (TestStep)
+# Graceful teardown: restore CR, backup CR (finalizer GCs the artifact), cluster.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 240
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      kube delete pvk-restore restore1 --ignore-not-found --wait=true --timeout=60s
+      kube delete pvk-backup backup1 --ignore-not-found --wait=true --timeout=120s
+      kube delete pvk cluster1 --wait=true --timeout=150s

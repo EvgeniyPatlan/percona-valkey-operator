@@ -1,0 +1,36 @@
+# GOLDEN — compare/configmap_valkey-cluster1-90.yml  (engine 9.0 variant)
+#
+# Expected shape of the shared rendered ConfigMap valkey-cluster1 AFTER the
+# restart-key change (03-change-restart-key sets appendonly yes). compare_kubectl
+# captures the live ConfigMap, NORMALIZES volatile fields (resourceVersion, uid,
+# creationTimestamp, managedFields, the config-hash annotation value), and diffs
+# against this file.
+#
+# REGENERATE-DON'T-PAPER-OVER (arch §3.3): if an INTENDED operator change alters
+# the rendered valkey.conf, run `compare_kubectl configmap/valkey-cluster1 --save`
+# to overwrite this golden — do NOT hand-edit it to silence a real diff. An
+# unintended diff is an operator bug. This committed copy is the human-readable
+# baseline; the live --save output is byte-exact authority.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkey-cluster1
+  labels:
+    app.kubernetes.io/name: percona-valkey
+    app.kubernetes.io/instance: cluster1
+    app.kubernetes.io/managed-by: percona-valkey-operator
+    app.kubernetes.io/component: valkey
+    valkey.percona.com/cluster: cluster1
+    valkey.percona.com/component: valkey
+data:
+  # The rendered valkey.conf the pods load. Operator-managed base directives plus
+  # the user's spec.config overlay (appendonly yes from the restart-key change).
+  # Cluster-mode bootstrap directives (cluster-enabled, cluster bus) are present;
+  # the live-settable maxmemory is applied via CONFIG SET, not necessarily baked
+  # into this file on a no-roll change.
+  valkey.conf: |
+    cluster-enabled yes
+    cluster-config-file /data/nodes.conf
+    cluster-node-timeout 15000
+    appendonly yes
+    dir /data

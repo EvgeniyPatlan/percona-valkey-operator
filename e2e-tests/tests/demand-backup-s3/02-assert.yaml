@@ -1,0 +1,12 @@
+# tests/demand-backup-s3/02-assert.yaml  (TestAssert)
+# MinIO is up and serving before we point the cluster's backup storage at it.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 200
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+status:
+  availableReplicas: 1

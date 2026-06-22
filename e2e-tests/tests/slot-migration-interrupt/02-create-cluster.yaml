@@ -1,0 +1,15 @@
+# tests/slot-migration-interrupt/02-create-cluster.yaml  (TestStep)
+# Durable 4-shard cluster so a scale-in (4 → 3) drives a real CLUSTER MIGRATESLOTS
+# drain of the leaving shard's slots onto a surviving destination — the migration we
+# interrupt. 9.0-ONLY: atomic MIGRATESLOTS / GETSLOTMIGRATIONS require Valkey 9.0+
+# (arch §3.2, data-plane §185). The CSV gates this test to 9.0 (hack/lint-csv.sh).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # Start from 4 shards (override the template's shards:3 via a patch on apply).
+      apply_cluster "${CONF_DIR}/cr-cluster.yaml"
+      kube patch pvk cluster1 --type merge -p '{"spec":{"shards":4}}'

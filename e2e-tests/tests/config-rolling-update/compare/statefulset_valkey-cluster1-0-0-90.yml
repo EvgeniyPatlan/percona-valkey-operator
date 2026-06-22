@@ -1,0 +1,69 @@
+# GOLDEN — compare/statefulset_valkey-cluster1-0-0-90.yml  (engine 9.0 variant)
+#
+# Expected shape of the StatefulSet valkey-cluster1-0-0 (shard 0, node 0 — the
+# INITIAL primary; live role is read from the engine, never the name) AFTER the
+# config-roll. compare_kubectl captures the live StatefulSet, NORMALIZES volatile
+# fields (resourceVersion, uid, creationTimestamp, generation, managedFields,
+# status, the image digest, and the server-config-hash annotation VALUE — only
+# its presence is asserted here, the roll itself is asserted in 03-assert), and
+# diffs against this file.
+#
+# REGENERATE-DON'T-PAPER-OVER (arch §3.3): an intended manifest change is captured
+# with `compare_kubectl statefulset/valkey-cluster1-0-0 --save`; never hand-edit
+# to mask a real diff.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey-cluster1-0-0
+  labels:
+    app.kubernetes.io/name: percona-valkey
+    app.kubernetes.io/instance: cluster1-0-0
+    app.kubernetes.io/managed-by: percona-valkey-operator
+    app.kubernetes.io/component: valkey
+    valkey.percona.com/cluster: cluster1
+    valkey.percona.com/shard-index: "0"
+    valkey.percona.com/node-index: "0"
+    valkey.percona.com/component: valkey
+spec:
+  replicas: 1
+  serviceName: valkey-cluster1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: cluster1-0-0
+      valkey.percona.com/cluster: cluster1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: percona-valkey
+        app.kubernetes.io/instance: cluster1-0-0
+        app.kubernetes.io/component: valkey
+        valkey.percona.com/cluster: cluster1
+        valkey.percona.com/shard-index: "0"
+        valkey.percona.com/node-index: "0"
+      # The pod-template server-config-hash annotation is present; its VALUE is
+      # normalized out (it legitimately changes on a restart-key roll — asserted
+      # separately in 03-assert.yaml).
+      annotations:
+        valkey.percona.com/server-config-hash: "NORMALIZED"
+    spec:
+      containers:
+        - name: valkey
+          ports:
+            - name: valkey
+              containerPort: 6379
+            - name: cluster-bus
+              containerPort: 16379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi

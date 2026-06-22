@@ -1,0 +1,15 @@
+# tests/init-cluster/00-assert.yaml  (TestAssert)
+# Wait until cert-manager's controller Deployment is Available before proceeding.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 300
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+status:
+  conditions:
+    - type: Available
+      status: "True"

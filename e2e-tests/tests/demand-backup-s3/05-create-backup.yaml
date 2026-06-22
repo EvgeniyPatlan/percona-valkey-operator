@@ -1,0 +1,18 @@
+# tests/demand-backup-s3/05-create-backup.yaml  (TestStep)
+# Apply an on-demand PerconaValkeyBackup referencing the cluster's "s3-bucket"
+# storage. kuttl applies every document in this file; the bare CR below is created
+# directly (no envsubst needed — no version placeholder). The operator runs an
+# RDB BGSAVE per shard and ships each to s3://valkey-backups/cluster1/...
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 60
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyBackup
+metadata:
+  name: backup1
+spec:
+  clusterName: cluster1
+  storageName: s3-bucket
+  type: full
+  consistency: strict

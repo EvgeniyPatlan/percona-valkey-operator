@@ -1,0 +1,35 @@
+# tests/scaling/05-assert.yaml  (TestAssert)
+# Scale-in converged: back to 3 shards, all 16384 slots still assigned (the drain
+# never orphaned a slot), and every one of the 100 seeded keys reads back exactly
+# — data survived both the scale-out AND scale-in rebalances.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 900
+commands:
+  - script: |-
+      source ../../functions
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_state:ok'
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+      # No data loss: all seeded keys read back their original values.
+      for i in $(seq 1 100); do
+        got="$(exec_valkey cluster1 -c GET "e2e:scale:key:${i}")"
+        test "$got" = "val-${i}" || {
+          echo "data loss after scale-in: key e2e:scale:key:${i} = '${got}' (want val-${i})" >&2
+          exit 1
+        }
+      done
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+status:
+  state: Ready
+  shards: 3
+  conditions:
+    - type: ClusterFormed
+      status: "True"
+    - type: SlotsAssigned
+      status: "True"
+    - type: Ready
+      status: "True"

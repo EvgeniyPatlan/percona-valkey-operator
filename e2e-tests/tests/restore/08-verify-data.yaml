@@ -1,0 +1,20 @@
+# tests/restore/08-verify-data.yaml  (TestStep)
+# Data round-trips: every seeded key that was DELETED in step 06 is back with its
+# original value after the restore. This is the restore case's headline assertion
+# (data compare pre-backup == post-restore, arch §3 / README).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_state:ok'
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+      for i in $(seq 1 50); do
+        got="$(exec_valkey cluster1 -c GET "e2e:restore:key:${i}")"
+        test "$got" = "val-${i}" || {
+          echo "restore did not recover key e2e:restore:key:${i} = '${got}' (want val-${i})" >&2
+          exit 1
+        }
+      done

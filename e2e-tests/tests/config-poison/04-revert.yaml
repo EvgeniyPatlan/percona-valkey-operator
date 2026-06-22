@@ -1,0 +1,13 @@
+# tests/config-poison/04-revert.yaml  (TestStep)
+# Reverting the spec to a valid maxmemory must clear the condition on the next reconcile
+# (arch §4.1 row 7 recovery). maxmemory is live-settable, so the fix applies via
+# CONFIG SET with NO pod roll.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      kube patch pvk cluster1 --type merge \
+        -p '{"spec":{"config":{"maxmemory":"256mb"}}}'

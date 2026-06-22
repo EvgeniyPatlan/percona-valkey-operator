@@ -1,0 +1,14 @@
+# tests/restore/04-seed-data.yaml  (TestStep)
+# Seed the keys whose survival across backup→loss→restore is the whole point of
+# this case. Record nothing else — the verify step recomputes the same values.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+      for i in $(seq 1 50); do
+        exec_valkey cluster1 -c SET "e2e:restore:key:${i}" "val-${i}"
+      done

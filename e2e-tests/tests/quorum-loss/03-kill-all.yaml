@@ -1,0 +1,17 @@
+# tests/quorum-loss/03-kill-all.yaml  (TestStep)
+# Induce total quorum loss for the only shard: delete EVERY pod of cluster1 (the single
+# primary + its single replica). Cache mode (no persistence) means any respawned pod
+# returns as a brand-new node with NO slots (no nodes.conf to reclaim), so the shard's
+# slots stay unowned and there is no replica to promote → TAKEOVER is impossible (arch
+# §4.1 row 6 / data-plane §294). Deterministic: the deletion is the injection.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # Delete all valkey pods of the cluster (primary + replica of the one shard).
+      kube delete pod \
+        -l app.kubernetes.io/instance=cluster1,app.kubernetes.io/name=valkey \
+        --wait=false

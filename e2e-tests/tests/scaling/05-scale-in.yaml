@@ -1,0 +1,13 @@
+# tests/scaling/05-scale-in.yaml  (TestStep)
+# Scale in 6 → 3 shards. The operator drains the leaving shards' slots one
+# PlanDrainMove per reconcile (CLUSTER MIGRATESLOTS to a surviving primary,
+# 9.0+) before removing the ValkeyNodes — slots must never be orphaned. We patch
+# the spec; the paired assert waits for the drain to converge with no slot loss.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      kube patch pvk cluster1 --type=merge -p '{"spec":{"shards":3}}'

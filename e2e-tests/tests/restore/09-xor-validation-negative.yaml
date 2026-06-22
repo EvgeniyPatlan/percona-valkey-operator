@@ -1,0 +1,32 @@
+# tests/restore/09-xor-validation-negative.yaml  (TestStep)
+# Negative: a restore that sets BOTH backupName and backupSource must be rejected
+# by the CEL XValidation (has(backupName) != has(backupSource)) — arch §2.2
+# restore. kubectl apply must FAIL; we invert the exit code so the step passes
+# only when the API server refuses the object. (Authored as a script so the
+# expected-failure is explicit rather than relying on kuttl error-handling.)
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 60
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      if kube apply -f - <<'EOF'
+      apiVersion: valkey.percona.com/v1alpha1
+      kind: PerconaValkeyRestore
+      metadata:
+        name: restore-both
+      spec:
+        clusterName: cluster1
+        backupName: backup1
+        backupSource:
+          destination: s3://valkey-backups/cluster1/backup1
+          storageName: s3-bucket
+        strategy: InPlace
+      EOF
+      then
+        echo "CEL did NOT reject a restore with both backupName and backupSource" >&2
+        kube delete pvk-restore restore-both --ignore-not-found
+        exit 1
+      fi
+      echo "OK: restore with both backupName+backupSource correctly rejected"

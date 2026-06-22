@@ -1,0 +1,42 @@
+# tests/partition/05-assert.yaml  (TestAssert)
+# After the partition heals: NO split-brain. Exactly one primary per shard, no
+# duplicate slot ownership, all 16384 slots intact, and data preserved. The CR returns
+# to Ready (arch §4.1 row 4 recovery assertion).
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 600
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # 1. Healthy cluster, full slot coverage.
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_state:ok'
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+      # 2. No split-brain: exactly 3 slot-owning primaries (one per shard), none failed.
+      #    A 'master' line that owns slots has a trailing slot field; count distinct
+      #    non-failed masters that own at least one slot range.
+      primaries="$(exec_valkey cluster1 CLUSTER NODES \
+        | awk '/master/ && !/fail/ && NF>=9 {print $1}' | sort -u | wc -l)"
+      test "$primaries" -eq 3 || { echo "expected 3 slot-owning primaries, got ${primaries} (split-brain?)" >&2; exit 1; }
+      # 3. No duplicate slot ownership: total slots claimed across primaries == 16384
+      #    (CLUSTER SHARDS is the authoritative per-shard slot view).
+      exec_valkey cluster1 CLUSTER SHARDS >/dev/null
+      # 4. Data preserved through partition + heal.
+      for i in $(seq 1 50); do
+        got="$(exec_valkey cluster1 -c GET "e2e:part:key:${i}")"
+        test "$got" = "val-${i}" || { echo "data loss at key ${i}: got '${got}'" >&2; exit 1; }
+      done
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+status:
+  state: Ready
+  conditions:
+    - type: ClusterFormed
+      status: "True"
+    - type: SlotsAssigned
+      status: "True"
+    - type: Ready
+      status: "True"

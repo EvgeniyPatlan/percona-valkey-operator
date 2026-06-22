@@ -1,0 +1,13 @@
+# tests/failover-kill-primary/02-create-cluster.yaml  (TestStep)
+# The durable DEFAULT cluster: 3-shard x 1-replica, StatefulSet + persistence ON.
+# Persistence ON is load-bearing for this scenario: on the primary pod restart the
+# engine reloads nodes.conf and rejoins with the SAME node ID as a replica, so the
+# operator does NOT MEET/REPLICATE/takeover it (arch data-plane §327, §284).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      apply_cluster "${CONF_DIR}/cr-cluster.yaml"

@@ -1,0 +1,19 @@
+# tests/demand-backup-s3/06-assert.yaml  (TestAssert)
+# The typo'd backup lands in a terminal failure state (Failed or Error) — it must
+# NOT report Succeeded and must NOT silently skip. The stateDescription names the
+# unresolved storage so the failure is actionable.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 300
+commands:
+  - script: |-
+      source ../../functions
+      state="$(kube get pvk-backup backup-typo -o jsonpath='{.status.state}')"
+      case "$state" in
+        Failed|Error) ;;
+        *) echo "typo'd storageName did not fail explicitly (state='${state}')" >&2; exit 1 ;;
+      esac
+      # The failure must reference the bad storage name, not be a generic/silent skip.
+      kube get pvk-backup backup-typo -o jsonpath='{.status.stateDescription}' \
+        | grep -qi 's3-bukcet\|storage' || {
+          echo "failure reason does not name the unresolved storage" >&2; exit 1; }

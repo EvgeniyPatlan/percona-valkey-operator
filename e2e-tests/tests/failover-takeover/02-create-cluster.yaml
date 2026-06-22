@@ -1,0 +1,13 @@
+# tests/failover-takeover/02-create-cluster.yaml  (TestStep)
+# Cache-mode (Deployment, NO persistence) 1-shard x 1-replica cluster. With a single
+# slot-owning primary, killing it loses quorum AND there is no persisted node ID to
+# reclaim — exactly the precondition for promoteOrphanedReplicas → TAKEOVER
+# (arch §4.1 row 2, data-plane §284). CR template is local: conf/cr-cache.yaml.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      apply_cluster "${TEST_DIR}/conf/cr-cache.yaml"

@@ -1,0 +1,11 @@
+# tests/scaling/00-deploy-cert-manager.yaml  (TestStep)
+# Modelled on ../init-cluster/00-deploy-cert-manager.yaml. cert-manager is the
+# operator TLS prerequisite (arch §3.1); install it first.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      deploy_cert_manager

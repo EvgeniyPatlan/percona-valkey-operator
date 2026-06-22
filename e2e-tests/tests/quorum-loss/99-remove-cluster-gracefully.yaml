@@ -1,0 +1,12 @@
+# tests/quorum-loss/99-remove-cluster-gracefully.yaml  (TestStep)
+# Teardown. The cluster is intentionally Degraded; deletion still runs the finalizer
+# path. Use a force fallback in case the stuck shard blocks an ordered teardown.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 180
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      kube delete pvk cluster1 --wait=true --timeout=120s || \
+        kube delete pvk cluster1 --wait=false --ignore-not-found

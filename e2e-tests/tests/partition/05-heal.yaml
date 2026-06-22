@@ -1,0 +1,16 @@
+# tests/partition/05-heal.yaml  (TestStep)
+# Heal the partition: remove the NetworkPolicy and the chaos label. The isolated
+# primary rejoins; with persistence ON it returns with the SAME node ID and reclaims
+# its slots, so no TAKEOVER was ever needed (arch data-plane §327).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      kube delete networkpolicy e2e-partition-isolate --ignore-not-found
+      # Drop the chaos label from whichever pod still carries it (idempotent).
+      for p in $(kube get pod -l e2e-chaos/partition=isolated -o name); do
+        kube label "$p" e2e-chaos/partition- || true
+      done

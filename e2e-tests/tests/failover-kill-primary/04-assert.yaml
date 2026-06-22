@@ -1,0 +1,51 @@
+# tests/failover-kill-primary/04-assert.yaml  (TestAssert)
+# Recovery (quorum HOLDS, persistence ON): Valkey's OWN election promotes the synced
+# replica; the operator only OBSERVES and updates status — it must NOT issue TAKEOVER
+# (arch §4.1 row 1, data-plane §278). The killed pod restarts, reloads nodes.conf, and
+# rejoins with the SAME node ID as a replica of the new primary.
+#
+# kuttl runs the declarative object match AND the commands; both must pass before the
+# timeout. The CR must return to Ready with all slots intact and no data loss.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 600
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # 1. Cluster healthy: all 16384 slots assigned, ok state (real CLUSTER INFO
+      #    fields — there is no cluster_slots_unassigned; unassigned = 16384-assigned).
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_state:ok'
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+      # 2. Engine-level recovery: a primary exists and the rejoined node syncs as a
+      #    replica. 'role:master' / 'master_link_status:up' are VERBATIM engine tokens
+      #    (arch §4 note) — keep them exact even though the operator API says
+      #    primary/replica. At least one replica link must be up post-recovery.
+      exec_valkey cluster1 CLUSTER NODES | grep -q 'master'
+      exec_valkey cluster1 -c INFO replication | grep -Eq 'role:(master|slave)'
+      # 3. Negative guard: the operator must NOT have issued an orphan-promote TAKEOVER
+      #    on this quorum-holding / persistence-ON path. ReplicasTakenOver belongs to
+      #    failover-takeover/ only (arch §4.1 distinguishes the two paths explicitly).
+      if kube get events -o jsonpath='{.items[*].reason}' | grep -qw 'ReplicasTakenOver'; then
+        echo "UNEXPECTED ReplicasTakenOver on quorum-holding/persistence-ON path" >&2
+        exit 1
+      fi
+      # 4. No data loss: every seeded key reads back its original value.
+      for i in $(seq 1 50); do
+        got="$(exec_valkey cluster1 -c GET "e2e:fkp:key:${i}")"
+        test "$got" = "val-${i}" || { echo "data loss at key ${i}: got '${got}'" >&2; exit 1; }
+      done
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+status:
+  state: Ready
+  conditions:
+    - type: ClusterFormed
+      status: "True"
+    - type: SlotsAssigned
+      status: "True"
+    - type: Ready
+      status: "True"

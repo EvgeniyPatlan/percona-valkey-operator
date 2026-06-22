@@ -1,0 +1,13 @@
+# tests/tls/04-compare.yaml  (TestStep)
+# Optional golden compare (arch §3.3): the rendered StatefulSet's TLS volume +
+# mount. Anchors the TLS-specific manifest shape against compare/*.yml.
+# REGENERATE-DON'T-PAPER-OVER: capture intended changes with --save.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      resolve_compare_suffix
+      compare_kubectl statefulset/valkey-cluster1-0-0

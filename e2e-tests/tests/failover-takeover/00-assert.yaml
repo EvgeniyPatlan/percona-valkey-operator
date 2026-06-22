@@ -1,0 +1,14 @@
+# tests/failover-takeover/00-assert.yaml  (TestAssert)
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 300
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+status:
+  conditions:
+    - type: Available
+      status: "True"

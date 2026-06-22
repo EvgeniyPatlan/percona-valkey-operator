@@ -1,0 +1,15 @@
+# tests/restore/05-create-backup.yaml  (TestStep)
+# Take the backup we will restore from. kuttl applies the CR document below.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 60
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyBackup
+metadata:
+  name: backup1
+spec:
+  clusterName: cluster1
+  storageName: s3-bucket
+  type: full
+  consistency: strict

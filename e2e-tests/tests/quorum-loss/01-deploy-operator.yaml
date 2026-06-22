@@ -1,0 +1,9 @@
+# tests/quorum-loss/01-deploy-operator.yaml  (TestStep)
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      deploy_operator

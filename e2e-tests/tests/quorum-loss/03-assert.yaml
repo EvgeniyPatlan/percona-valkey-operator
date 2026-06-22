@@ -1,0 +1,53 @@
+# tests/quorum-loss/03-assert.yaml  (TestAssert)
+# NEGATIVE-case guard (arch §4.1 row 6): with the only shard's primary AND replica
+# gone, TAKEOVER is impossible. The operator MUST surface Degraded/Failed with a reason
+# indicating manual intervention, and MUST NEVER silently mark Ready while slots are
+# unowned. This is the headline "negatives never report Ready" assertion.
+#
+# kuttl polls this script until it passes or times out. We wait for the terminal
+# Degraded/Failed state, and HARD-FAIL if the cluster ever claims Ready with < 16384
+# slots assigned (the bug this case guards against).
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 600
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+
+      state="$(kube get pvk cluster1 -o jsonpath='{.status.state}')"
+      echo "observed state: ${state}"
+
+      # The bug: Ready while the shard's slots are actually unowned. If state==Ready,
+      # the engine must independently confirm full coverage; otherwise this is the
+      # silent-Ready failure and we hard-fail immediately (do not wait it out).
+      if [ "$state" = "Ready" ]; then
+        if exec_valkey cluster1 'CLUSTER INFO' 2>/dev/null | grep -q 'cluster_slots_assigned:16384' \
+           && exec_valkey cluster1 'CLUSTER INFO' 2>/dev/null | grep -q 'cluster_state:ok'; then
+          # Genuinely healthy — the fault did not actually remove coverage (e.g. a
+          # respawn reclaimed it). Inconclusive rather than a violation; let kuttl
+          # keep polling for the Degraded transition.
+          echo "state Ready WITH full coverage — fault did not stick; still polling" >&2
+          exit 1
+        fi
+        echo "VIOLATION: state=Ready but slots are NOT fully assigned (silent-Ready bug)" >&2
+        exit 1
+      fi
+
+      # Acceptable terminal outcome: Degraded or Failed (with a reason).
+      case "$state" in
+        Degraded|Failed)
+          reason="$(kube get pvk cluster1 \
+            -o jsonpath='{.status.conditions[?(@.type=="Degraded")].reason}')"
+          msg="$(kube get pvk cluster1 \
+            -o jsonpath='{.status.conditions[?(@.type=="Degraded")].message}')"
+          echo "terminal state=${state} reason='${reason}' message='${msg}'"
+          # A reason SHOULD be present to point at manual intervention; do not hard-fail
+          # on an empty reason (exact vocabulary is operator policy), but require the
+          # state itself to be the honest non-Ready terminal.
+          ;;
+        *)
+          echo "not yet terminal (state='${state}'); waiting for Degraded/Failed" >&2
+          exit 1
+          ;;
+      esac

@@ -1,0 +1,64 @@
+# e2e-tests/perf/benchmark-job.yaml — valkey-benchmark Job template (rendered by
+# run-perf.sh via envsubst). Cluster-mode aware (--cluster follows -MOVED/-ASK so load
+# spreads across all shards). Connects through the cluster's headless Service.
+#
+# Substituted vars (from the profile + lib-perf.sh):
+#   ${JOB_NAME}        unique job name (includes the run id + phase)
+#   ${CLUSTER_NAME}    target PerconaValkeyCluster name
+#   ${BENCH_IMAGE}     image carrying valkey-benchmark (the engine image works)
+#   ${SVC_HOST}        headless Service FQDN of the cluster
+#   ${SVC_PORT}        valkey port (6379)
+#   ${BENCH_REQUESTS}  -n total requests
+#   ${BENCH_CLIENTS}   -c parallel connections
+#   ${BENCH_PAYLOAD}   -d payload bytes
+#   ${BENCH_KEYSPACE}  --keyspacelen (distinct keys, spread across CRC16 keyslots)
+#   ${BENCH_TESTS}     -t comma-list (e.g. SET,GET)
+#   ${AUTH_SECRET}     Secret holding the _operator/benchmark password (key: password)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  labels:
+    app.kubernetes.io/name: valkey-perf
+    app.kubernetes.io/instance: ${CLUSTER_NAME}
+spec:
+  backoffLimit: 0          # a perf run is one shot; do not silently retry & skew numbers
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: valkey-perf
+        app.kubernetes.io/instance: ${CLUSTER_NAME}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: valkey-benchmark
+          image: ${BENCH_IMAGE}
+          env:
+            - name: BENCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${AUTH_SECRET}
+                  key: password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              # Warmup (discarded): prime page cache / connections.
+              valkey-benchmark --cluster \
+                -h "${SVC_HOST}" -p "${SVC_PORT}" \
+                -a "${BENCH_PASSWORD}" \
+                -n 10000 -c "${BENCH_CLIENTS}" -d "${BENCH_PAYLOAD}" \
+                -t SET -q >/dev/null 2>&1 || true
+              # Measured window. --csv → machine-parseable; run-perf.sh parses stdout.
+              echo "===PERF-BEGIN==="
+              valkey-benchmark --cluster \
+                -h "${SVC_HOST}" -p "${SVC_PORT}" \
+                -a "${BENCH_PASSWORD}" \
+                -n "${BENCH_REQUESTS}" -c "${BENCH_CLIENTS}" -d "${BENCH_PAYLOAD}" \
+                -r "${BENCH_KEYSPACE}" --keyspacelen "${BENCH_KEYSPACE}" \
+                -t "${BENCH_TESTS}" --csv
+              echo "===PERF-END==="
+          resources:
+            requests: { cpu: "500m", memory: 256Mi }

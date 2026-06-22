@@ -135,6 +135,20 @@ test: manifests generate fmt vet envtest ## Run unit + envtest tests with covera
 	      d=$$($(GO) list -f '{{.Dir}}' $$p); ls $$d/*_test.go >/dev/null 2>&1 && echo $$p; done) \
 	      -coverprofile cover.out
 
+.PHONY: cover
+cover: ## Coverage gate — recompute pkg/ line coverage and fail below the 80% floor.
+	# Re-runs the tested pkg/... packages with a coverage profile, then enforces the
+	# floor. Coverage is measured on pkg/... ONLY (excludes cmd/, generated deepcopy,
+	# and e2e helpers — docs/architecture/11-testing-qa.md §1). Mirrors the CI gate in
+	# .github/workflows/tests.yml so a local `make cover` matches red/green in CI.
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	  $(GO) test $$(for p in $$($(GO) list ./pkg/... | grep -v /e2e-tests); do \
+	      d=$$($(GO) list -f '{{.Dir}}' $$p); ls $$d/*_test.go >/dev/null 2>&1 && echo $$p; done) \
+	      -coverprofile cover.out
+	@total=$$($(GO) tool cover -func=cover.out | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
+	  echo "pkg coverage: $${total}%"; \
+	  awk -v t="$${total}" 'BEGIN { if (t+0 < 80.0) { print "ERROR: pkg coverage " t "% < 80% floor"; exit 1 } }'
+
 .PHONY: check-generate
 check-generate: manifests generate ## CRD/deepcopy/RBAC drift gate — fails on a dirty tree.
 	@git diff --exit-code || (echo "ERROR: generated artifacts are stale — run 'make generate manifests' and commit"; exit 1)
@@ -150,6 +164,75 @@ lint-fix: golangci-lint ## Run golangci-lint with --fix.
 .PHONY: lint-config
 lint-config: golangci-lint ## Validate the golangci-lint config.
 	$(GOLANGCI_LINT) config verify
+
+##@ E2E & Security
+
+# kuttl binary discovery: prefer ./bin, then a kubectl plugin (`kubectl kuttl`), then a
+# bare `kuttl` on PATH. ABSENT in this authoring environment — the target is GUARDED and
+# prints install guidance rather than failing opaquely. kuttl runs on the CI/Jenkins
+# runners and on a developer Kind, never on a PR. (docs/architecture/11-testing-qa.md §3)
+KUTTL               ?= $(LOCALBIN)/kubectl-kuttl
+# Selector: `make e2e-test` runs the whole suite; `make e2e-test TEST=<name>` one case.
+TEST                ?=
+KUTTL_TEST_FLAG     := $(if $(strip $(TEST)),--test $(TEST),)
+
+.PHONY: lint-csv
+lint-csv: ## Lint the e2e run-*.csv matrices (missing dir / bad version / migration<9.0).
+	./hack/lint-csv.sh
+
+.PHONY: e2e-test
+e2e-test: lint-csv ## Run the kuttl e2e suite (TEST=<name> for one case; needs kuttl + a live cluster + IMAGE=<img>).
+	# GUARD: kuttl is not installed in every dev environment. Resolve it from ./bin,
+	# a kubectl plugin, or PATH; if none is found, print install guidance and stop
+	# (NEVER pretend a run happened). A live kubectl context and a built/pushed operator
+	# IMAGE are required — this does not run on a PR (GitHub Actions is unit/lint only).
+	@kuttl_bin=""; \
+	if [ -x "$(KUTTL)" ]; then kuttl_bin="$(KUTTL) test"; \
+	elif kubectl kuttl version >/dev/null 2>&1; then kuttl_bin="kubectl kuttl test"; \
+	elif command -v kuttl >/dev/null 2>&1; then kuttl_bin="kuttl test"; \
+	else \
+	  echo "ERROR: kuttl not found."; \
+	  echo "  Install: https://kuttl.dev/docs/cli.html  (or 'kubectl krew install kuttl')"; \
+	  echo "  CI/Jenkins provides it; it is intentionally absent in this author-only env."; \
+	  exit 1; \
+	fi; \
+	if command -v kuttl-shfmt >/dev/null 2>&1; then \
+	  echo "==> kuttl-shfmt (format check)"; kuttl-shfmt -d e2e-tests/tests || exit 1; \
+	fi; \
+	echo "==> $$kuttl_bin --config e2e-tests/kuttl.yaml $(KUTTL_TEST_FLAG) (IMAGE=$(IMG))"; \
+	IMAGE="$(IMG)" $$kuttl_bin --config e2e-tests/kuttl.yaml $(KUTTL_TEST_FLAG)
+
+# Security scanners: gosec (HIGH-severity SAST) + govulncheck (known-vuln check). Both are
+# ABSENT here; the target downloads each into ./bin on a real runner and NEVER fails the
+# build merely because a tool is missing locally (author-only). HIGH gosec findings DO fail
+# on CI (.github/workflows/scan.yml). (docs/architecture/11-testing-qa.md §6.1)
+GOSEC               ?= $(LOCALBIN)/gosec
+GOVULNCHECK         ?= $(LOCALBIN)/govulncheck
+GOSEC_VERSION       ?= v2.21.4
+GOVULNCHECK_VERSION ?= latest
+
+.PHONY: scan
+scan: scan-gosec scan-vuln ## Run gosec (HIGH-fail) + govulncheck; downloads into ./bin, soft on local absence.
+
+.PHONY: scan-gosec
+scan-gosec: $(LOCALBIN) ## gosec SAST — fails only on HIGH findings (matches CI).
+	@if [ ! -x "$(GOSEC)" ]; then \
+	  echo "==> gosec absent; fetching $(GOSEC_VERSION) into $(LOCALBIN)"; \
+	  GOBIN=$(LOCALBIN) $(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) \
+	    || { echo "WARN: could not install gosec (offline?); skipping locally — CI enforces it"; exit 0; }; \
+	fi; \
+	echo "==> gosec -severity high ./..."; \
+	"$(GOSEC)" -severity high ./...
+
+.PHONY: scan-vuln
+scan-vuln: $(LOCALBIN) ## govulncheck known-vulnerability scan (advisory locally).
+	@if [ ! -x "$(GOVULNCHECK)" ]; then \
+	  echo "==> govulncheck absent; fetching $(GOVULNCHECK_VERSION) into $(LOCALBIN)"; \
+	  GOBIN=$(LOCALBIN) $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) \
+	    || { echo "WARN: could not install govulncheck (offline?); skipping locally — CI runs it"; exit 0; }; \
+	fi; \
+	echo "==> govulncheck ./..."; \
+	"$(GOVULNCHECK)" ./... || echo "WARN: govulncheck reported findings (advisory locally; see scan.yml policy)"
 
 ##@ Build
 

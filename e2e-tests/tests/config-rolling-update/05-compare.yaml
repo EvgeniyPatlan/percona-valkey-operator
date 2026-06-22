@@ -1,0 +1,20 @@
+# tests/config-rolling-update/05-compare.yaml  (TestStep)
+# Golden-file machinery anchor (arch §3.3). After the restart-key roll + live-key
+# CONFIG SET, capture the rendered StatefulSet and the shared ConfigMap and diff
+# them against the committed goldens under compare/ (volatile fields normalized by
+# compare_kubectl). The engine-version variant suffix (-90/-80/-72) is resolved
+# from $VALKEY_VERSION by resolve_compare_suffix.
+#
+# DISCIPLINE: when an INTENDED change alters a generated manifest, REGENERATE the
+# golden (compare_kubectl <obj> --save) — NEVER edit the test to paper over a real
+# diff. An unintended diff is a bug to fix, not to absorb.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      resolve_compare_suffix
+      compare_kubectl statefulset/valkey-cluster1-0-0
+      compare_kubectl configmap/valkey-cluster1

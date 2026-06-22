@@ -1,0 +1,39 @@
+# tests/restore/03-create-cluster.yaml  (TestStep)
+# 3-shard durable cluster with the S3 backup storage (same shape as
+# demand-backup-s3). ${VALKEY_VERSION} substituted via envsubst.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # functions sets VALKEY_VERSION/CLUSTER_NAME with := (not exported); export
+      # them so envsubst (a child process) sees them for the inline CR below.
+      export VALKEY_VERSION CLUSTER_NAME
+      envsubst <<'EOF' | kube apply -f -
+      apiVersion: valkey.percona.com/v1alpha1
+      kind: PerconaValkeyCluster
+      metadata:
+        name: cluster1
+      spec:
+        image: perconalab/percona-valkey:${VALKEY_VERSION}
+        mode: cluster
+        shards: 3
+        replicas: 1
+        workloadType: StatefulSet
+        persistence:
+          size: 1Gi
+        resources:
+          requests: { cpu: "100m", memory: 256Mi }
+        backup:
+          storages:
+            s3-bucket:
+              type: s3
+              s3:
+                bucket: valkey-backups
+                prefix: cluster1
+                region: us-east-1
+                endpointUrl: http://minio:9000
+                credentialsSecret: minio-s3-credentials
+      EOF

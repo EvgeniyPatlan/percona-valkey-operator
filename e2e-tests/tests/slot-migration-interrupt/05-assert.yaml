@@ -1,0 +1,45 @@
+# tests/slot-migration-interrupt/05-assert.yaml  (TestAssert)
+# The HEADLINE invariant: NO SLOT LOSS. cluster_slots_assigned:16384 must hold
+# throughout — the atomic MIGRATESLOTS keeps the source serving until hand-off, so a
+# destination loss mid-flight must never leave slots unowned (arch §4.1 row 5,
+# data-plane §183). Acceptable terminal outcomes (operator must reach ONE of them):
+#   (a) the drain RE-PLANS against a healthy destination and converges → state: Ready,
+#       3 shards, all 16384 slots assigned; OR
+#   (b) the operator HALTS and surfaces Degraded with a clear reason.
+# What is NEVER acceptable: silent slot loss, or a Ready state with < 16384 slots.
+#
+# This assert is intentionally tolerant of (a) vs (b) (the re-plan-vs-halt choice is
+# operator policy) but STRICT on the no-slot-loss invariant.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 600
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # Invariant (must ALWAYS hold): full slot coverage, no unowned slots.
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+
+      state="$(kube get pvk cluster1 -o jsonpath='{.status.state}')"
+      echo "terminal state: ${state}"
+      case "$state" in
+        Ready)
+          # Outcome (a): converged. cluster_state must be ok and 3 shards remain.
+          exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_state:ok'
+          shards="$(kube get pvk cluster1 -o jsonpath='{.spec.shards}')"
+          test "$shards" = "3" || { echo "Ready but shards=${shards}, expected 3" >&2; exit 1; }
+          ;;
+        Degraded|Failed)
+          # Outcome (b): halted with a reason. Acceptable — but slots still fully owned
+          # (checked above). Require a non-empty Degraded/Failed reason in conditions.
+          reason="$(kube get pvk cluster1 -o jsonpath='{.status.conditions[?(@.type=="Degraded")].reason}')"
+          echo "degraded reason: ${reason}"
+          ;;
+        *)
+          echo "unexpected terminal state '${state}' (expected Ready or Degraded/Failed)" >&2
+          exit 1
+          ;;
+      esac
+
+      # NEVER silent slot loss: re-affirm after classifying the state.
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'

@@ -1,0 +1,11 @@
+# tests/tls/00-deploy-cert-manager.yaml  (TestStep)
+# cert-manager is the hard prerequisite for the cert-manager TLS mode this case
+# exercises (spec.tls.certManager.issuerRef).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      deploy_cert_manager

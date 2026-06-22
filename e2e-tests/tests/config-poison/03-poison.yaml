@@ -1,0 +1,28 @@
+# tests/config-poison/03-poison.yaml  (TestStep)
+# Poison a LIVE-settable key with an invalid value: maxmemory=notanumber. The operator
+# applies live keys via CONFIG SET on the node; the engine rejects this → the
+# ValkeyNode's LiveConfigApplied condition goes False with the engine error, progress is
+# blocked, and crucially NO pod roll occurs (maxmemory is excluded from the roll hash —
+# arch §2.2 item 5) and the operator does NOT crash-loop (arch §4.1 row 7).
+#
+# We snapshot every valkey StatefulSet's metadata.generation into a ConfigMap BEFORE
+# poisoning so 03-assert can prove the generation did not advance (no roll). kuttl steps
+# don't share shell state, hence the ConfigMap hand-off.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # Snapshot baseline StatefulSet generations (one per valkey node).
+      baseline="$(kube get statefulset \
+        -l app.kubernetes.io/instance=cluster1,app.kubernetes.io/name=valkey \
+        -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.generation} {end}')"
+      echo "baseline STS generations: ${baseline}"
+      kube create configmap e2e-config-poison-baseline \
+        --from-literal=generations="${baseline}" \
+        --dry-run=client -o yaml | kube apply -f -
+      # Inject the invalid live key.
+      kube patch pvk cluster1 --type merge \
+        -p '{"spec":{"config":{"maxmemory":"notanumber"}}}'

@@ -1,0 +1,45 @@
+# tests/partition/04-partition.yaml  (TestStep)
+# Inject a network partition by isolating ONE shard's primary from the majority with a
+# deny-all NetworkPolicy (arch §4.2). Deterministic: we resolve the current primary,
+# stamp it with a unique chaos label, then select that label in a policy that drops all
+# ingress AND egress for that pod. A quorum-holding majority (the other 2 shards) stays
+# reachable, so the operator must NOT issue TAKEOVER (split-brain avoidance).
+#
+# NOTE: requires a CNI that enforces NetworkPolicy (Calico/Cilium). The default kind
+# CNI (kindnet) does NOT enforce policies — Jenkins/GKE and a Calico-equipped kind are
+# the real targets (documented in README.md).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # Resolve the live primary of shard 0 ('master' is verbatim engine wire output).
+      primary_ip="$(exec_valkey cluster1 CLUSTER NODES \
+        | awk '/master/ && !/fail/ {split($2,a,"@"); split(a[1],b,":"); print b[1]}' \
+        | head -1)"
+      test -n "$primary_ip"
+      primary_pod="$(kube get pod \
+        -l app.kubernetes.io/instance=cluster1,app.kubernetes.io/name=valkey \
+        -o jsonpath="{.items[?(@.status.podIP=='${primary_ip}')].metadata.name}")"
+      test -n "$primary_pod"
+      echo "partitioning primary pod: ${primary_pod} (ip ${primary_ip})"
+      # Stamp a unique selector label, then deny all traffic to/from it.
+      kube label pod "$primary_pod" e2e-chaos/partition=isolated --overwrite
+      cat <<'YAML' | kube apply -f -
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: e2e-partition-isolate
+      spec:
+        podSelector:
+          matchLabels:
+            e2e-chaos/partition: isolated
+        policyTypes:
+          - Ingress
+          - Egress
+        # empty ingress + egress = deny ALL to/from the selected pod
+        ingress: []
+        egress: []
+      YAML

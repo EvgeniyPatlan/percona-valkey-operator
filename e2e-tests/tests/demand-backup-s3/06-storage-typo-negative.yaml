@@ -1,0 +1,18 @@
+# tests/demand-backup-s3/06-storage-typo-negative.yaml  (TestStep)
+# Negative: a storageName that is NOT a key in spec.backup.storages must produce
+# an EXPLICIT error (no fallback, no silent skip) — arch §2.2 backup item 1. The
+# operator resolves the storage against cluster.spec.backup.storages[name] and,
+# on a miss, surfaces a terminal failure with a clear reason.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 60
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyBackup
+metadata:
+  name: backup-typo
+spec:
+  clusterName: cluster1
+  storageName: s3-bukcet
+  type: full
+  consistency: strict

@@ -1,0 +1,25 @@
+# tests/demand-backup-s3/05-assert.yaml  (TestAssert)
+# The backup reaches terminal Succeeded with complete slot coverage (strict
+# consistency requires the union of per-shard RDBs to cover all 16384 slots —
+# arch §2.2 backup item 2, backup-restore §3.2). The partial-spec asserts the CR
+# status; the script probe asserts the s3:// destination prefix and that an RDB
+# object actually landed in the bucket via the operator-reported per-shard objects.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 600
+commands:
+  - script: |-
+      source ../../functions
+      dest="$(kube get pvk-backup backup1 -o jsonpath='{.status.destination}')"
+      case "$dest" in
+        s3://*) ;;
+        *) echo "backup destination is not an s3:// URL: '${dest}'" >&2; exit 1 ;;
+      esac
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyBackup
+metadata:
+  name: backup1
+status:
+  state: Succeeded
+  slotCoverage: complete

@@ -1,0 +1,27 @@
+# tests/config-poison/04-assert.yaml  (TestAssert)
+# After revert: LiveConfigApplied clears to True on every node and the CR returns to
+# Ready. Still no roll required (live key).
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # Every ValkeyNode reports LiveConfigApplied=True (no lingering False).
+      states="$(kube get vkn -l app.kubernetes.io/instance=cluster1 \
+        -o jsonpath='{range .items[*]}{range .status.conditions[?(@.type=="LiveConfigApplied")]}{.status}{end} {end}')"
+      echo "LiveConfigApplied statuses: ${states}"
+      printf '%s' "$states" | grep -q 'False' \
+        && { echo "a node still reports LiveConfigApplied=False after revert" >&2; exit 1; }
+      echo "$states" | grep -q 'True'
+---
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cluster1
+status:
+  state: Ready
+  conditions:
+    - type: Ready
+      status: "True"

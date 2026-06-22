@@ -1,0 +1,42 @@
+# tests/config-poison/03-assert.yaml  (TestAssert)
+# The poison must produce LiveConfigApplied=False (with the engine error), block
+# progress, and NOT roll any pod or crash-loop the operator (arch §4.1 row 7).
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+
+      # 1. LiveConfigApplied=False on at least one ValkeyNode, with a non-empty message
+      #    (the engine's CONFIG SET error). The condition lives on the vkn (arch §2.2).
+      false_nodes="$(kube get vkn \
+        -l app.kubernetes.io/instance=cluster1 \
+        -o jsonpath='{range .items[*]}{.metadata.name}:{range .status.conditions[?(@.type=="LiveConfigApplied")]}{.status}/{.message}{end} {end}')"
+      echo "LiveConfigApplied per node: ${false_nodes}"
+      printf '%s' "$false_nodes" | grep -q ':False/' \
+        || { echo "expected LiveConfigApplied=False on a ValkeyNode" >&2; exit 1; }
+
+      # 2. NO pod roll: StatefulSet generations unchanged vs the baseline snapshot.
+      baseline="$(kube get configmap e2e-config-poison-baseline -o jsonpath='{.data.generations}')"
+      now="$(kube get statefulset \
+        -l app.kubernetes.io/instance=cluster1,app.kubernetes.io/name=valkey \
+        -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.generation} {end}')"
+      echo "baseline=[${baseline}] now=[${now}]"
+      for pair in $baseline; do
+        name="${pair%%=*}"; gen="${pair##*=}"
+        cur="$(printf '%s\n' $now | tr ' ' '\n' | awk -F= -v n="$name" '$1==n {print $2}')"
+        test "$cur" = "$gen" || { echo "ROLL DETECTED on ${name}: gen ${gen} → ${cur} (maxmemory must not roll)" >&2; exit 1; }
+      done
+
+      # 3. NO crash-loop: the operator Deployment is still Available and no valkey pod is
+      #    in CrashLoopBackOff or has an excessive restart count.
+      kube get deploy valkey-operator \
+        -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' | grep -q True
+      if kube get pod -l app.kubernetes.io/instance=cluster1,app.kubernetes.io/name=valkey \
+           -o jsonpath='{range .items[*]}{.status.containerStatuses[*].state.waiting.reason}{"\n"}{end}' \
+           | grep -q 'CrashLoopBackOff'; then
+        echo "valkey pod in CrashLoopBackOff — poison must not crash-loop" >&2
+        exit 1
+      fi

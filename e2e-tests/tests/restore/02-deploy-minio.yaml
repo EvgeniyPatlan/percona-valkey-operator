@@ -1,0 +1,54 @@
+# tests/restore/02-deploy-minio.yaml  (TestStep)
+# In-namespace MinIO as the S3 target (mirrors demand-backup-s3) so this case is
+# self-contained: it takes its OWN backup and then restores from it.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      kube create secret generic minio-s3-credentials \
+        --from-literal=AWS_ACCESS_KEY_ID=minioadmin \
+        --from-literal=AWS_SECRET_ACCESS_KEY=minioadmin \
+        --dry-run=client -o yaml | kube apply -f -
+      kube apply -f - <<'EOF'
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: minio
+        labels: { app: minio }
+      spec:
+        replicas: 1
+        selector: { matchLabels: { app: minio } }
+        template:
+          metadata: { labels: { app: minio } }
+          spec:
+            containers:
+              - name: minio
+                image: quay.io/minio/minio:latest
+                args: ["server", "/data", "--console-address", ":9001"]
+                env:
+                  - { name: MINIO_ROOT_USER, value: minioadmin }
+                  - { name: MINIO_ROOT_PASSWORD, value: minioadmin }
+                ports:
+                  - { containerPort: 9000, name: s3 }
+                volumeMounts:
+                  - { name: data, mountPath: /data }
+            volumes:
+              - { name: data, emptyDir: {} }
+      ---
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: minio
+      spec:
+        selector: { app: minio }
+        ports:
+          - { name: s3, port: 9000, targetPort: 9000 }
+      EOF
+      kube rollout status deploy/minio --timeout=180s
+      kube run minio-mkbucket --rm -i --restart=Never \
+        --image=quay.io/minio/mc:latest --command -- /bin/sh -c '
+          mc alias set local http://minio:9000 minioadmin minioadmin &&
+          mc mb -p local/valkey-backups || true'

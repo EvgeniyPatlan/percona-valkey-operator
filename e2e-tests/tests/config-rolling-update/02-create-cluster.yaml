@@ -1,0 +1,10 @@
+# tests/config-rolling-update/02-create-cluster.yaml  (TestStep)
+# A 3-shard × 1-replica durable cluster — the baseline whose config we then change.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      apply_cluster "${CONF_DIR}/cr-cluster.yaml"

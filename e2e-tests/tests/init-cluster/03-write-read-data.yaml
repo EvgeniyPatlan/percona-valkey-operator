@@ -1,0 +1,17 @@
+# tests/init-cluster/03-write-read-data.yaml  (TestStep)
+# Prove the formed cluster is usable end-to-end: all 16384 slots assigned, a write
+# routed by CRC16 keyslot persists and reads back. Asserts on engine output grep the
+# REAL CLUSTER INFO fields (cluster_state:ok, cluster_slots_assigned:16384 — there is
+# NO cluster_slots_unassigned field; unassigned = 16384 - assigned).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_state:ok'
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+      # -c: follow MOVED/ASK redirects so the write lands on the owning shard.
+      exec_valkey cluster1 -c SET e2e:init:key hello
+      test "$(exec_valkey cluster1 -c GET e2e:init:key)" = "hello"

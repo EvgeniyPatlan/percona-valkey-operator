@@ -1,0 +1,10 @@
+# tests/init-cluster/02-create-cluster.yaml  (TestStep)
+# Apply a 3-shard × 1-replica durable cluster (conf/cr-cluster.yaml).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      apply_cluster "${CONF_DIR}/cr-cluster.yaml"

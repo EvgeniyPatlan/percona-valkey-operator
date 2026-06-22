@@ -1,0 +1,23 @@
+# tests/failover-takeover/conf/cr-cache.yaml — cache-mode (NO persistence) CR template.
+#
+# Local to this chaos case because the shared conf/cr-cluster.yaml is durable
+# (persistence ON), and the orphan-promote TAKEOVER path runs ONLY when
+# HasFailoverQuorum()==false AND spec.persistence==nil (arch data-plane §284).
+# Rendered by `apply_cluster` with envsubst (${CLUSTER_NAME}, ${VALKEY_VERSION}).
+#
+# workloadType: Deployment => cache; persistence intentionally OMITTED (its absence is
+# meaningful — arch §03 §2.5). A small 1-shard topology with a single primary+replica
+# is enough: killing the primary removes the only slot-owning primary, so quorum is
+# lost and the operator must promote the orphaned replica via CLUSTER FAILOVER TAKEOVER.
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: ${CLUSTER_NAME}
+spec:
+  image: perconalab/percona-valkey:${VALKEY_VERSION}
+  mode: cluster
+  shards: 1
+  replicas: 1
+  workloadType: Deployment
+  resources:
+    requests: { cpu: "100m", memory: 256Mi }

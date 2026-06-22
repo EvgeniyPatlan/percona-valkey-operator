@@ -1,0 +1,27 @@
+# tests/failover-kill-primary/04-kill-primary.yaml  (TestStep)
+# DETERMINISTIC fault injection (arch §4.2): delete the pod that is CURRENTLY the
+# live primary of shard 0. We resolve it from CLUSTER NODES (role read from live
+# state, NEVER from the pod name -0-0 — after any prior failover the primary may be a
+# different pod; arch QA §C note). No sleep-based racing: the delete itself is the
+# injection, and kuttl polls 04-assert until the cluster re-converges.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # Resolve shard-0's current primary pod by matching its podIP to the 'master'
+      # line in CLUSTER NODES (engine token 'master' is verbatim wire output; arch
+      # §2.3 note). The status.role on the child ValkeyNode mirrors this, but we read
+      # the engine directly so the test does not depend on operator status lag.
+      primary_ip="$(exec_valkey cluster1 CLUSTER NODES \
+        | awk '/master/ && !/fail/ {split($2,a,"@"); split(a[1],b,":"); print b[1]}' \
+        | head -1)"
+      test -n "$primary_ip"
+      primary_pod="$(kube get pod \
+        -l app.kubernetes.io/instance=cluster1,app.kubernetes.io/name=valkey \
+        -o jsonpath="{.items[?(@.status.podIP=='${primary_ip}')].metadata.name}")"
+      test -n "$primary_pod"
+      echo "killing live primary pod: ${primary_pod} (ip ${primary_ip})"
+      kube delete pod "$primary_pod" --wait=false

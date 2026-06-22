@@ -1,0 +1,14 @@
+# tests/partition/03-seed-data.yaml  (TestStep)
+# Seed data so 05-assert can prove slots/data survive the partition + heal intact.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_state:ok'
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+      for i in $(seq 1 50); do
+        exec_valkey cluster1 -c SET "e2e:part:key:${i}" "val-${i}"
+      done

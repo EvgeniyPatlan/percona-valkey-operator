@@ -1,0 +1,19 @@
+# e2e-tests/conf/cr-replication.yaml — replication-mode CR template for kuttl cases.
+#
+# Rendered by `apply_cluster` with envsubst (${CLUSTER_NAME}, ${VALKEY_VERSION}).
+# Non-cluster modes pin shards=1 (CheckNSetDefaults enforces it — arch §2.2): a single
+# primary with N replicas, no 16384-slot sharding. Used by replication/standalone cases.
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: ${CLUSTER_NAME}
+spec:
+  image: perconalab/percona-valkey:${VALKEY_VERSION}
+  mode: replication
+  shards: 1
+  replicas: 2
+  workloadType: StatefulSet
+  persistence:
+    size: 1Gi
+  resources:
+    requests: { cpu: "100m", memory: 256Mi }

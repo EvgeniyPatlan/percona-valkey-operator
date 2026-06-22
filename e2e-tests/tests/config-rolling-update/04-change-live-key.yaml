@@ -1,0 +1,19 @@
+# tests/config-rolling-update/04-change-live-key.yaml  (TestStep)
+# Record the post-roll config-hash, then patch a LIVE-settable key (maxmemory).
+# Live keys (maxmemory / maxmemory-policy / maxclients) are EXCLUDED from
+# serverConfigRollHash and applied via CONFIG SET — they must NOT roll the pods
+# (arch §2.2 item 5, §6.1 control-plane §4). The assert proves the hash is
+# unchanged and the value took effect live.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      HASH_ANN='valkey.percona.com/server-config-hash'
+      kube get statefulset valkey-cluster1-0-1 \
+        -o "jsonpath={.spec.template.metadata.annotations['${HASH_ANN//./\\.}']}" \
+        > /tmp/cru-live-hash-before.txt
+      kube patch pvk cluster1 --type=merge \
+        -p '{"spec":{"config":{"maxmemory":"200mb"}}}'

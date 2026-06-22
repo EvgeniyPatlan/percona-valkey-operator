@@ -1,0 +1,60 @@
+# tests/demand-backup-s3/02-deploy-minio.yaml  (TestStep)
+# Stand up an in-namespace MinIO as the S3-compatible target (no cloud creds
+# needed for CI/Kind). Create the bucket and the credentials Secret the operator's
+# backup Job reads. The endpoint is the in-cluster Service DNS so the backup tool
+# reaches it over the pod network.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # S3 credentials Secret consumed by the backup tool (keys per the backup
+      # storage contract: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).
+      kube create secret generic minio-s3-credentials \
+        --from-literal=AWS_ACCESS_KEY_ID=minioadmin \
+        --from-literal=AWS_SECRET_ACCESS_KEY=minioadmin \
+        --dry-run=client -o yaml | kube apply -f -
+      # MinIO server + Service.
+      kube apply -f - <<'EOF'
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: minio
+        labels: { app: minio }
+      spec:
+        replicas: 1
+        selector: { matchLabels: { app: minio } }
+        template:
+          metadata: { labels: { app: minio } }
+          spec:
+            containers:
+              - name: minio
+                image: quay.io/minio/minio:latest
+                args: ["server", "/data", "--console-address", ":9001"]
+                env:
+                  - { name: MINIO_ROOT_USER, value: minioadmin }
+                  - { name: MINIO_ROOT_PASSWORD, value: minioadmin }
+                ports:
+                  - { containerPort: 9000, name: s3 }
+                volumeMounts:
+                  - { name: data, mountPath: /data }
+            volumes:
+              - { name: data, emptyDir: {} }
+      ---
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: minio
+      spec:
+        selector: { app: minio }
+        ports:
+          - { name: s3, port: 9000, targetPort: 9000 }
+      EOF
+      kube rollout status deploy/minio --timeout=180s
+      # Create the bucket via a one-shot mc Job (idempotent: ignore "already owned").
+      kube run minio-mkbucket --rm -i --restart=Never \
+        --image=quay.io/minio/mc:latest --command -- /bin/sh -c '
+          mc alias set local http://minio:9000 minioadmin minioadmin &&
+          mc mb -p local/valkey-backups || true'

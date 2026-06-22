@@ -1,9 +1,30 @@
-# kuttl TestSuite config (PS/PG-style). The first real kuttl case (init-cluster)
-# needs a working cluster controller (M3); the matrix + Jenkins wiring land in
-# M8 (docs/architecture/11-testing-qa.md §3, §7). Empty tests/ in M0.
+# kuttl TestSuite config (PS/PG-style — docs/architecture/11-testing-qa.md §3.1).
+#
+# Each subdir of e2e-tests/tests/ is a kuttl TestCase: numbered NN-<step>.yaml
+# (kind TestStep) paired with NN-assert.yaml (kind TestAssert). `timeout` is an
+# INTEGER number of SECONDS (kuttl convention — not a Go duration string).
+#
+# Run it via `make e2e-test` (which shells `kubectl kuttl test --config ...`), or a
+# single case with `make e2e-test TEST=<name>`. A LIVE cluster + a built/pushed
+# operator IMAGE are required; nothing here runs on a PR — Jenkins runs it on GKE
+# (and `make e2e-test` runs it on a local Kind), selected from the run-*.csv matrices.
+#
+# startKIND is intentionally LEFT UNSET: cluster lifecycle is owned by the harness
+# (`make e2e-test` / the Jenkinsfile / a local `kind create cluster`), so kuttl runs
+# against an already-provisioned context rather than spinning up its own throwaway
+# Kind per run. Flip `startKIND: true` (+ `kindConfig`) only if you want kuttl to own
+# the cluster for a one-off local run.
 apiVersion: kuttl.dev/v1beta1
 kind: TestSuite
 testDirs:
   - e2e-tests/tests
+# Per-step default; individual TestStep/TestAssert files override with their own
+# `timeout:` for slow operations (image pull, cluster formation, backup→restore).
 timeout: 180
+# Bounded parallelism so a laptop Kind is not overwhelmed; Jenkins fans out across
+# cluster suffixes instead, so it can raise this.
 parallel: 4
+# startKIND: false       # harness owns the cluster (see header note)
+# kindNodeCache: true    # cache pulled images across kind nodes on CI
+# artifactsDir: e2e-tests/_artifacts   # logs/objects collected on failure (CI uploads to S3)
+# reportFormat: JSON     # machine-readable report for the Jenkins matrix

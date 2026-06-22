@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# e2e-tests/functions — shared bash vocabulary sourced by kuttl `script:`/`commands:`
+# steps (PS/PSMDB-style). A TestStep sources it relative to the case dir:
+#
+#     source ../../functions
+#
+# It centralizes the operator/cluster names, the deploy/cert-manager helpers, the
+# `apply_cluster` CR-templating, the `compare_kubectl` golden-file machinery, and the
+# `exec_valkey` / wait helpers the asserts grep. SKELETON for M8: helper bodies the
+# legs (OPS-8.0/8.1/8.3) flesh out are marked `# TODO(OPS-8.x)`. The CONTRACT (names,
+# args, what each helper guarantees) is fixed here so the kuttl cases can be authored
+# against it. (docs/architecture/11-testing-qa.md §3.1, §3.3)
+set -o errexit
+set -o pipefail
+
+# --- identity / config (override via env from the harness) ---
+: "${OPERATOR_NS:=valkey-operator}"
+: "${OPERATOR_DEPLOY:=valkey-operator}"        # config/manager/manager.yaml metadata.name
+: "${OPERATOR_IMAGE:=${IMAGE:-perconalab/valkey-operator:main}}"
+: "${CLUSTER_NAME:=cluster1}"
+: "${VALKEY_VERSION:=9.0}"                      # engine major from the run-*.csv row
+: "${CERT_MANAGER_VER:=v1.16.2}"
+# NAMESPACE is injected by kuttl per-TestCase ($NAMESPACE); fall back for manual runs.
+: "${NAMESPACE:=${NAMESPACE:-valkey-e2e}}"
+# Where golden files live, relative to the case dir, and the platform/engine variant
+# suffix selection (arch §3.3): -oc (OpenShift), -90/-80/-72 (engine), -eks.
+: "${COMPARE_SUFFIX:=}"                         # e.g. -90, -oc; resolved by compare_kubectl
+
+# Repo root (functions lives at <root>/e2e-tests/functions).
+E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export ROOT_REPO="${ROOT_REPO:-$(cd "$E2E_ROOT/.." && pwd)}"
+export CONF_DIR="$E2E_ROOT/conf"
+
+# --- kubectl wrappers ---
+kube()  { kubectl -n "$NAMESPACE" "$@"; }
+kubec() { kubectl "$@"; }                       # cluster-scoped
+
+# --- deploy helpers (TODO(OPS-8.0): flesh bodies) ---
+
+deploy_cert_manager() {
+  # Install cert-manager and wait for it to be Available (operator TLS depends on it).
+  kubec apply -f "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VER}/cert-manager.yaml"
+  kubec -n cert-manager wait --for=condition=Available deploy --all --timeout=180s
+}
+
+deploy_operator() {
+  # Apply the operator bundle (deploy/bundle.yaml) into $NAMESPACE, pin $OPERATOR_IMAGE,
+  # and wait for the rollout. The bundle is the M7 artifact (`make manifests`).
+  kube apply --server-side -f "$ROOT_REPO/deploy/bundle.yaml"
+  kube set image "deploy/$OPERATOR_DEPLOY" "*=$OPERATOR_IMAGE" || true
+  kube rollout status "deploy/$OPERATOR_DEPLOY" --timeout=180s
+}
+
+apply_cluster() {
+  # Render a CR template ($1, e.g. $CONF_DIR/cr-cluster.yaml) with the engine version
+  # and cluster name substituted, then apply it. The template uses ${VALKEY_VERSION}/
+  # ${CLUSTER_NAME} placeholders resolved by envsubst.
+  # Usage: apply_cluster "$CONF_DIR/cr-cluster.yaml"
+  local tmpl="${1:?apply_cluster: CR template path required}"
+  envsubst < "$tmpl" | kube apply -f -
+}
+
+# --- exec / probe helpers the asserts grep (TODO(OPS-8.1/GO-8.9)) ---
+
+exec_valkey() {
+  # Exec `valkey-cli <args...>` inside a Ready pod of cluster $1 and echo stdout.
+  # Asserts grep this for `cluster_state:ok` / `cluster_slots_assigned:16384`
+  # (the REAL CLUSTER INFO fields — there is no cluster_slots_unassigned; unassigned
+  # = 16384 - assigned). Auth/TLS flags are added from the cluster's secrets.
+  # Usage: exec_valkey cluster1 'CLUSTER INFO'
+  local cluster="${1:?exec_valkey: cluster name required}"; shift
+  local pod
+  pod="$(kube get pod -l app.kubernetes.io/instance="$cluster",app.kubernetes.io/name=valkey \
+          -o jsonpath='{.items[0].metadata.name}')"
+  # TODO(OPS-8.1): resolve -a <pass> / --tls flags from the cluster's ACL+TLS secrets.
+  kube exec "$pod" -c valkey -- valkey-cli "$@"
+}
+
+wait_cluster_ready() {
+  # Block until PerconaValkeyCluster $1 reports status.state=Ready (or timeout $2 sec).
+  local cluster="${1:-$CLUSTER_NAME}" timeout="${2:-600}" deadline
+  deadline=$(( SECONDS + timeout ))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    [ "$(kube get pvk "$cluster" -o jsonpath='{.status.state}' 2>/dev/null)" = "Ready" ] && return 0
+    sleep 5
+  done
+  echo "wait_cluster_ready: '$cluster' did not reach Ready in ${timeout}s" >&2
+  return 1
+}
+
+# --- golden-file compare (arch §3.3 — TODO(OPS-8.3)) ---
+
+compare_kubectl() {
+  # Capture the live YAML of object $1 (e.g. statefulset/valkey-cluster1-0-0), NORMALIZE
+  # volatile fields (timestamps, resourceVersion, uid, image digests, generated
+  # suffixes), and diff against the committed golden:
+  #     tests/<case>/compare/<sanitized-name>${COMPARE_SUFFIX}.yml
+  # DISCIPLINE (arch §3.3): when an INTENDED change alters generated manifests,
+  # REGENERATE the golden (compare_kubectl ... --save) — never edit the test logic to
+  # paper over a real diff. A spurious diff from an UNINTENDED change is a bug to fix.
+  # Usage: compare_kubectl statefulset/valkey-cluster1-0-0
+  local object="${1:?compare_kubectl: object (kind/name) required}"
+  echo "TODO(OPS-8.3): capture+normalize '$object' and diff vs compare/*.yml" >&2
+  return 0
+}
+
+# Resolve the golden-file variant suffix from the environment (engine/platform).
+# arch §3.3: -90/-80/-72 by engine, -oc on OpenShift, -eks on EKS.
+resolve_compare_suffix() {
+  case "$VALKEY_VERSION" in
+    9.0) COMPARE_SUFFIX="-90" ;;
+    8.0) COMPARE_SUFFIX="-80" ;;
+    7.2) COMPARE_SUFFIX="-72" ;;
+  esac
+  export COMPARE_SUFFIX
+}

@@ -1,0 +1,28 @@
+# GOLDEN — tests/tls/compare/statefulset_valkey-cluster1-0-0-90.yml  (engine 9.0)
+#
+# Expected TLS-specific shape of StatefulSet valkey-cluster1-0-0: the TLS Secret
+# volume and its read-only mount at /etc/valkey/tls (the FROZEN M5 contract path).
+# compare_kubectl NORMALIZES volatile fields (resourceVersion, uid, generation,
+# creationTimestamp, managedFields, status, image digest, config/tls hash
+# annotation VALUES). This golden focuses on the TLS volume + mount; the full STS
+# baseline is in the config-rolling-update case.
+#
+# REGENERATE-DON'T-PAPER-OVER (arch §3.3): an intended change is captured with
+# `compare_kubectl statefulset/valkey-cluster1-0-0 --save`; never hand-edit.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey-cluster1-0-0
+spec:
+  template:
+    spec:
+      containers:
+        - name: valkey
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/valkey/tls
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: internal-cluster1-tls

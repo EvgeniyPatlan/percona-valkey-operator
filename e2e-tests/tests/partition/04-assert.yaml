@@ -1,0 +1,21 @@
+# tests/partition/04-assert.yaml  (TestAssert)
+# DURING the partition (quorum still held by the 2 unaffected shards), the operator
+# must NOT issue an orphan-promote TAKEOVER — that would risk split-brain. Native
+# election (if any) handles it; the operator only runs promoteOrphanedReplicas when
+# HasFailoverQuorum() is false (arch §4.1 row 4 / data-plane §284). We assert the
+# absence of the orphan-promote event while quorum holds.
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # The NetworkPolicy exists (partition is active).
+      kube get networkpolicy e2e-partition-isolate -o name | grep -q networkpolicy
+      # Guard: no orphan-promote TAKEOVER while quorum holds. ReplicasTakenOver must NOT
+      # be emitted here (it belongs to the quorum-LOST failover-takeover/ case only).
+      if kube get events -o jsonpath='{.items[*].reason}' | grep -qw 'ReplicasTakenOver'; then
+        echo "UNEXPECTED ReplicasTakenOver during quorum-holding partition (split-brain risk)" >&2
+        exit 1
+      fi

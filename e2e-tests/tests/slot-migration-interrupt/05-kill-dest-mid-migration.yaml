@@ -1,0 +1,51 @@
+# tests/slot-migration-interrupt/05-kill-dest-mid-migration.yaml  (TestStep)
+# DETERMINISTIC mid-migration interruption (arch §4.2): poll CLUSTER GETSLOTMIGRATIONS
+# until a migration is IN FLIGHT, then delete the DESTINATION pod — NOT a sleep-based
+# race. We resolve the destination node ID from GETSLOTMIGRATIONS, map it to a pod via
+# CLUSTER NODES (id → ip → pod), and delete it. On destination loss the operator must
+# NOT orphan slots: it re-plans PlanDrainMove against a healthy destination, or halts
+# and surfaces Degraded (asserted in 05-assert). 9.0-ONLY.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 180
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+
+      # Bounded wait for a migration to be in flight (no sleep-racing the outcome: we
+      # block on the OBSERVABLE GETSLOTMIGRATIONS signal, with a hard deadline).
+      dest_id=""
+      deadline=$(( SECONDS + 150 ))
+      while [ "$SECONDS" -lt "$deadline" ]; do
+        # GETSLOTMIGRATIONS output lists in-flight moves; extract a destination node id.
+        # Output is parsed leniently (field layout may vary by point release): take the
+        # first 40-hex-char token that is NOT the source — fall back to any node id.
+        migs="$(exec_valkey cluster1 CLUSTER GETSLOTMIGRATIONS 2>/dev/null || true)"
+        if [ -n "$migs" ] && printf '%s' "$migs" | grep -Eq '[0-9a-f]{40}'; then
+          dest_id="$(printf '%s\n' "$migs" | grep -Eo '[0-9a-f]{40}' | tail -1)"
+          [ -n "$dest_id" ] && break
+        fi
+        sleep 3   # poll interval only — the LOOP CONDITION is the GETSLOTMIGRATIONS
+                  # signal, not a fixed delay; the deadline bounds it.
+      done
+
+      if [ -z "$dest_id" ]; then
+        echo "no in-flight migration observed within deadline; cannot interrupt deterministically" >&2
+        # Do not fake an interruption: surface so the run is investigated rather than a
+        # false pass. (Migration may have completed faster than the poll on a tiny dataset.)
+        exit 1
+      fi
+      echo "in-flight migration destination node id: ${dest_id}"
+
+      # Map destination node id → ip → pod (engine tokens verbatim).
+      dest_ip="$(exec_valkey cluster1 CLUSTER NODES \
+        | awk -v id="$dest_id" '$1==id {split($2,a,"@"); split(a[1],b,":"); print b[1]}' \
+        | head -1)"
+      test -n "$dest_ip"
+      dest_pod="$(kube get pod \
+        -l app.kubernetes.io/instance=cluster1,app.kubernetes.io/name=valkey \
+        -o jsonpath="{.items[?(@.status.podIP=='${dest_ip}')].metadata.name}")"
+      test -n "$dest_pod"
+      echo "killing migration DESTINATION pod mid-flight: ${dest_pod} (ip ${dest_ip})"
+      kube delete pod "$dest_pod" --wait=false

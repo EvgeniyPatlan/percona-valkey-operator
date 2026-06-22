@@ -1,1 +1,16 @@
-# test-name,valkey-version — populated in M8 (e2e matrix)
+# run-minikube.csv — local / minikube-runnable subset (smallest footprint).
+#
+# FORMAT: test-name,valkey-version (see run-pr.csv header for the full contract).
+#
+# This is the subset that forms and exercises a cluster on a single laptop-sized
+# node without object storage or extra distro lanes — no S3 backup, no chaos, no
+# multi-engine fan-out. Everything pinned to the charter-default engine (9.0).
+# Use it for a quick local smoke before pushing:
+#   make e2e-test TEST=init-cluster IMAGE=perconalab/valkey-operator:main
+#
+# test-name,valkey-version
+init-cluster,9.0
+scaling,9.0
+config-rolling-update,9.0
+tls,9.0
+acl-users,9.0

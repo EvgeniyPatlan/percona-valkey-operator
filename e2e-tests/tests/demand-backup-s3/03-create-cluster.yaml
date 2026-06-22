@@ -1,0 +1,42 @@
+# tests/demand-backup-s3/03-create-cluster.yaml  (TestStep)
+# A 3-shard durable cluster WITH an S3 backup storage named "s3-bucket" pointing
+# at the in-namespace MinIO. The storage name is the key a PerconaValkeyBackup
+# references via spec.storageName (no fallback — a typo is an explicit error,
+# arch §2.2 backup item 1). ${VALKEY_VERSION} is substituted from the run-*.csv
+# row via envsubst (same mechanism as apply_cluster).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # functions sets VALKEY_VERSION/CLUSTER_NAME with := (not exported); export
+      # them so envsubst (a child process) sees them for the inline CR below.
+      export VALKEY_VERSION CLUSTER_NAME
+      envsubst <<'EOF' | kube apply -f -
+      apiVersion: valkey.percona.com/v1alpha1
+      kind: PerconaValkeyCluster
+      metadata:
+        name: cluster1
+      spec:
+        image: perconalab/percona-valkey:${VALKEY_VERSION}
+        mode: cluster
+        shards: 3
+        replicas: 1
+        workloadType: StatefulSet
+        persistence:
+          size: 1Gi
+        resources:
+          requests: { cpu: "100m", memory: 256Mi }
+        backup:
+          storages:
+            s3-bucket:
+              type: s3
+              s3:
+                bucket: valkey-backups
+                prefix: cluster1
+                region: us-east-1
+                endpointUrl: http://minio:9000
+                credentialsSecret: minio-s3-credentials
+      EOF

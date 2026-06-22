@@ -1,0 +1,14 @@
+# tests/demand-backup-s3/04-seed-data.yaml  (TestStep)
+# Seed deterministic keys so the restore case (which reuses this backup) can prove
+# the data round-trips. Spread across slots via CRC16 (-c follows MOVED/ASK).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      exec_valkey cluster1 'CLUSTER INFO' | grep -q 'cluster_slots_assigned:16384'
+      for i in $(seq 1 50); do
+        exec_valkey cluster1 -c SET "e2e:backup:key:${i}" "val-${i}"
+      done

@@ -1,0 +1,19 @@
+# tests/quorum-loss/conf/cr-cache.yaml — cache-mode (NO persistence) CR template.
+#
+# Local to this NEGATIVE case: a cache-mode 1-shard primary+replica. Killing BOTH the
+# primary and its only replica leaves the shard's slots with NO surviving owner and NO
+# replica to promote — TAKEOVER is impossible (arch §4.1 row 6 / data-plane §294). With
+# no persistence the pods come back as brand-new nodes (no nodes.conf to reclaim slots),
+# so the shard is genuinely stuck and the operator must surface Degraded/Failed.
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: ${CLUSTER_NAME}
+spec:
+  image: perconalab/percona-valkey:${VALKEY_VERSION}
+  mode: cluster
+  shards: 1
+  replicas: 1
+  workloadType: Deployment
+  resources:
+    requests: { cpu: "100m", memory: 256Mi }

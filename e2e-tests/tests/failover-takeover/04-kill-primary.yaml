@@ -1,0 +1,26 @@
+# tests/failover-takeover/04-kill-primary.yaml  (TestStep)
+# Cache mode (NO persistence), 1 shard = single primary+replica → killing the primary
+# loses quorum (HasFailoverQuorum()==false) and there is no persisted node ID to
+# reclaim. This is the ONLY scenario where the operator itself issues CLUSTER FAILOVER
+# TAKEOVER (arch §4.1 row 2 / data-plane §284). Reference step from arch §8.4, here
+# resolving the CURRENT primary from live CLUSTER NODES rather than hard-coding a pod
+# name (cache-mode pods are Deployment-backed, NOT named valkey-cluster1-0-0).
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      # Resolve the live primary's IP from CLUSTER NODES ('master' is verbatim engine
+      # wire output; arch §2.3 note), then map IP → pod and delete it deterministically.
+      primary_ip="$(exec_valkey cluster1 CLUSTER NODES \
+        | awk '/master/ && !/fail/ {split($2,a,"@"); split(a[1],b,":"); print b[1]}' \
+        | head -1)"
+      test -n "$primary_ip"
+      primary_pod="$(kube get pod \
+        -l app.kubernetes.io/instance=cluster1,app.kubernetes.io/name=valkey \
+        -o jsonpath="{.items[?(@.status.podIP=='${primary_ip}')].metadata.name}")"
+      test -n "$primary_pod"
+      echo "killing cache-mode primary pod: ${primary_pod} (ip ${primary_ip})"
+      kube delete pod "$primary_pod" --wait=false

@@ -1,0 +1,13 @@
+# tests/init-cluster/99-remove-cluster-gracefully.yaml  (TestStep)
+# Graceful teardown: delete the CR and let the operator's finalizers run the ordered
+# cluster teardown → backup-artifact cleanup → PVC reclaim (arch §2.2 item 7). kuttl
+# tears down the namespace after the last step; deleting the CR first exercises the
+# finalizer path rather than relying on namespace GC.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 180
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      kube delete pvk cluster1 --wait=true --timeout=150s

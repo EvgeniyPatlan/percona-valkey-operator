@@ -1,0 +1,11 @@
+# tests/scaling/02-create-cluster.yaml  (TestStep)
+# Apply the canonical 3-shard × 1-replica durable cluster, then seed data so the
+# scale-out / scale-in steps can prove no data loss across slot rebalancing.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 300
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      apply_cluster "${CONF_DIR}/cr-cluster.yaml"

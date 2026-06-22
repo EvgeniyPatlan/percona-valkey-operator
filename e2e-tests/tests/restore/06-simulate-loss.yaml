@@ -1,0 +1,17 @@
+# tests/restore/06-simulate-loss.yaml  (TestStep)
+# Destroy the live data so the restore has something to bring back: delete every
+# seeded key. The verify step (08) proves restore repopulated them from the RDB.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      for i in $(seq 1 50); do
+        exec_valkey cluster1 -c DEL "e2e:restore:key:${i}"
+      done
+      # Confirm the data is actually gone before restoring (guard against a
+      # false-positive verify if DEL silently no-ops).
+      got="$(exec_valkey cluster1 -c GET e2e:restore:key:1)"
+      test -z "$got" || { echo "key not deleted before restore: '${got}'" >&2; exit 1; }

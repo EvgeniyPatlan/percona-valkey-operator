@@ -1,0 +1,21 @@
+# tests/config-rolling-update/03-change-restart-key.yaml  (TestStep)
+# Record the pre-change config-hash of one node's workload, then patch a
+# RESTART-requiring valkey.conf key (appendonly). The operator must recompute
+# serverConfigRollHash, re-stamp the pod-template annotation
+# valkey.percona.com/server-config-hash, and roll the workloads one-at-a-time
+# (replicas-before-primary, proactive failover before a primary) — arch §2.2
+# item 5, §4.1, control-plane §11.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      HASH_ANN='valkey.percona.com/server-config-hash'
+      # Snapshot the current roll hash on shard-0 replica (node 0-1) for the assert.
+      kube get statefulset valkey-cluster1-0-1 \
+        -o "jsonpath={.spec.template.metadata.annotations['${HASH_ANN//./\\.}']}" \
+        > /tmp/cru-restart-hash-before.txt
+      kube patch pvk cluster1 --type=merge \
+        -p '{"spec":{"config":{"appendonly":"yes"}}}'

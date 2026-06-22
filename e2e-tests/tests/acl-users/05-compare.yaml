@@ -1,0 +1,14 @@
+# tests/acl-users/05-compare.yaml  (TestStep)
+# Optional golden compare (arch §3.3): the rendered ACL Secret internal-cluster1-acl
+# (the users.acl the engine loads). compare_kubectl normalizes volatile fields and
+# diffs against compare/*.yml. REGENERATE-DON'T-PAPER-OVER: capture intended ACL
+# rendering changes with --save; never hand-edit to mask a real diff.
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+timeout: 120
+commands:
+  - script: |-
+      set -o xtrace
+      source ../../functions
+      resolve_compare_suffix
+      compare_kubectl secret/internal-cluster1-acl

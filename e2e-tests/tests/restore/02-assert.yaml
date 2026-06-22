@@ -1,0 +1,11 @@
+# tests/restore/02-assert.yaml  (TestAssert)
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+timeout: 200
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+status:
+  availableReplicas: 1
