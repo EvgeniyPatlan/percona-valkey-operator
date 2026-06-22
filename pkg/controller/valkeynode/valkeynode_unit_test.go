@@ -290,7 +290,112 @@ func TestApplyConfigHashAnnotationEmpty(t *testing.T) {
 	}
 }
 
+func TestApplyTLSHashAnnotationEmpty(t *testing.T) {
+	tmpl := &corev1.PodTemplateSpec{}
+	applyTLSHashAnnotation(tmpl, "")
+	if tmpl.Annotations != nil {
+		t.Error("empty tlsHash must not set annotations (no phantom roll)")
+	}
+	applyTLSHashAnnotation(tmpl, "t1")
+	if tmpl.Annotations[naming.AnnTLSHash] != "t1" {
+		t.Errorf("tls-hash annotation = %q, want t1", tmpl.Annotations[naming.AnnTLSHash])
+	}
+}
+
+// TestTLSHashPropagatedToPodTemplate verifies the cluster-stamped naming.AnnTLSHash
+// on the ValkeyNode object propagates onto the pod template so a real cert change
+// rolls the workload through the config-hash roll machinery (07 §3.4).
+func TestTLSHashPropagatedToPodTemplate(t *testing.T) {
+	node := unitNode("mycluster-0-0")
+	node.Annotations = map[string]string{naming.AnnTLSHash: "tlshash-abc"}
+
+	labels := naming.NodeLabels(node.Name, node.Labels)
+	sts, err := buildStatefulSet(node, labels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sts.Spec.Template.Annotations[naming.AnnTLSHash]; got != "tlshash-abc" {
+		t.Errorf("pod-template tls-hash = %q, want tlshash-abc", got)
+	}
+}
+
+// TestExporterCredEnvFrozenNames locks the FROZEN M5 contract: the exporter
+// authenticates as _exporter via the REDIS_USER/REDIS_PASSWORD env vars, the
+// password sourced from internal-<cluster>-system-passwords[key _exporter].
+func TestExporterCredEnvFrozenNames(t *testing.T) {
+	node := unitNode("mycluster-0-0")
+	node.Spec.Exporter = valkeyv1alpha1.ExporterSpec{Enabled: true}
+
+	exp := buildExporterSidecar(node)
+	if exp == nil {
+		t.Fatal("exporter must be built when enabled")
+	}
+	envByName := map[string]corev1.EnvVar{}
+	for _, e := range exp.Env {
+		envByName[e.Name] = e
+	}
+	user, ok := envByName[naming.EnvExporterUser]
+	if !ok || user.Value != naming.SystemUserExporter {
+		t.Errorf("%s = %+v, want value %q", naming.EnvExporterUser, user, naming.SystemUserExporter)
+	}
+	pw, ok := envByName[naming.EnvExporterPassword]
+	if !ok || pw.ValueFrom == nil || pw.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("%s must be a SecretKeyRef, got %+v", naming.EnvExporterPassword, pw)
+	}
+	ref := pw.ValueFrom.SecretKeyRef
+	if ref.Name != naming.SystemPasswordsSecretName("mycluster") {
+		t.Errorf("password secret = %q, want %q", ref.Name, naming.SystemPasswordsSecretName("mycluster"))
+	}
+	if ref.Key != naming.SystemUserExporter {
+		t.Errorf("password key = %q, want %q", ref.Key, naming.SystemUserExporter)
+	}
+}
+
+// TestExporterScrapeArgsTLS verifies the TLS-aware metrics-option seam: with TLS
+// on, the exporter dials rediss:// with the shared CA mounted at the frozen
+// naming.TLSMountPath; with TLS off it dials plain redis:// over loopback.
+func TestExporterScrapeArgsTLS(t *testing.T) {
+	plain := unitNode("mycluster-0-0")
+	plain.Spec.Exporter = valkeyv1alpha1.ExporterSpec{Enabled: true}
+	expPlain := buildExporterSidecar(plain)
+	if hasArg(expPlain.Args, "--redis.addr=redis://localhost:6379") == false {
+		t.Errorf("plain exporter args = %v, want plain redis:// addr", expPlain.Args)
+	}
+	if len(expPlain.VolumeMounts) != 0 {
+		t.Errorf("plain exporter must mount no TLS volume, got %v", expPlain.VolumeMounts)
+	}
+
+	tlsNode := unitNode("mycluster-0-0")
+	tlsNode.Spec.Exporter = valkeyv1alpha1.ExporterSpec{Enabled: true}
+	tlsNode.Spec.TLS = &valkeyv1alpha1.TLSConfig{SecretName: "tls"}
+	expTLS := buildExporterSidecar(tlsNode)
+	if !hasArg(expTLS.Args, "--redis.addr=rediss://localhost:6379") {
+		t.Errorf("TLS exporter args = %v, want rediss:// addr", expTLS.Args)
+	}
+	if !hasArg(expTLS.Args, "--tls-ca-cert-file="+naming.TLSMountPath+"/"+naming.TLSSecretKeyCA) {
+		t.Errorf("TLS exporter args = %v, want --tls-ca-cert-file at %s", expTLS.Args, naming.TLSMountPath)
+	}
+	var mounted bool
+	for _, m := range expTLS.VolumeMounts {
+		if m.Name == tlsVolName && m.MountPath == naming.TLSMountPath && m.ReadOnly {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Errorf("TLS exporter must mount %s read-only, got %v", naming.TLSMountPath, expTLS.VolumeMounts)
+	}
+}
+
 // --- helpers ---
+
+func hasArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
 
 func hasPort(ports []corev1.ContainerPort, p int32) bool {
 	for _, cp := range ports {

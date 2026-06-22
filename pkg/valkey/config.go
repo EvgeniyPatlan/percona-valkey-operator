@@ -30,10 +30,16 @@ const ConfigFileKey = "valkey.conf"
 
 // Operator-managed config paths (mount points the operator owns, 04 §2.1 step4).
 const (
-	aclFilePath         = "/config/users/users.acl"
-	dataDir             = "/data"
-	clusterConfigFile   = "/data/nodes.conf"
-	tlsCertMountPath    = "/config/tls"
+	aclFilePath       = "/config/users/users.acl"
+	dataDir           = "/data"
+	clusterConfigFile = "/data/nodes.conf"
+	// tlsCertMountPath is the read-only TLS cert mount point. FROZEN M5 contract
+	// (= naming.TLSMountPath): the rendered tls-cert-file/tls-key-file/
+	// tls-ca-cert-file directives and the cert VolumeMount in the node resources
+	// builder share this single path so the mounted files and rendered paths agree
+	// (07 §3.1). pkg/valkey is a leaf and does not import pkg/naming, so the literal
+	// is duplicated here with this contract note rather than referenced.
+	tlsCertMountPath    = "/etc/valkey/tls"
 	tlsSecretFileCA     = "ca.crt"
 	tlsSecretFileCert   = "tls.crt"
 	tlsSecretFileKey    = "tls.key"

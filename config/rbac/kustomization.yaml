@@ -10,3 +10,7 @@ resources:
 - role_binding.yaml
 - leader_election_role.yaml
 - leader_election_role_binding.yaml
+# Per-CRD aggregated viewer/editor/admin ClusterRoles (07 §6.4). Hand-maintained,
+# NOT controller-gen output — they let platform admins grant end users CR access
+# without operator-level rights.
+- perconavalkeycluster_aggregated_roles.yaml

@@ -87,10 +87,14 @@ func TestServerConfigRollHashExcludesLiveKeysAndIsDeterministic(t *testing.T) {
 }
 
 // canonical ACL grant strings — must stay byte-identical to docs 07 §4.3.
+// _operator carries the M5 backup extension (+bgsave +sync +psync +replconf
+// APPENDED after +ping) so it can drive SYNC-as-replica backup (FROZEN M5
+// contract, 07 §4.3). The original canonical prefix is preserved contiguous.
 const (
-	wantOperatorRules = "resetchannels resetkeys -@all +cluster +config|get +config|set +info +client|setname +client|setinfo +replicaof +wait +ping"
-	wantExporterRules = "resetchannels resetkeys -@all +info +cluster|info +latency +ping"
-	wantBackupRules   = "resetchannels resetkeys -@all +bgsave +lastsave +save +info +wait +ping"
+	wantOperatorBaseRules = "resetchannels resetkeys -@all +cluster +config|get +config|set +info +client|setname +client|setinfo +replicaof +wait +ping"
+	wantOperatorRules     = wantOperatorBaseRules + " +bgsave +sync +psync +replconf"
+	wantExporterRules     = "resetchannels resetkeys -@all +info +cluster|info +latency +ping"
+	wantBackupRules       = "resetchannels resetkeys -@all +bgsave +lastsave +save +info +wait +ping"
 )
 
 func TestSystemUsersVerbatim(t *testing.T) {

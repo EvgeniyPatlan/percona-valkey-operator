@@ -363,7 +363,7 @@ func buildValkeyNodeSpec(cluster *valkeyv1alpha1.PerconaValkeyCluster, key nodeK
 	labels := naming.NodeLabels(naming.NodeName(cluster.Name, key.shard, key.node),
 		naming.ClusterTopologyLabels(cluster.Name, key.shard, key.node))
 
-	return &valkeyv1alpha1.ValkeyNode{
+	node := &valkeyv1alpha1.ValkeyNode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      naming.NodeName(cluster.Name, key.shard, key.node),
 			Namespace: cluster.Namespace,
@@ -381,11 +381,18 @@ func buildValkeyNodeSpec(cluster *valkeyv1alpha1.PerconaValkeyCluster, key nodeK
 			TopologySpreadConstraints: cluster.Spec.TopologySpreadConstraints,
 			Exporter:                  cluster.Spec.Exporter,
 			Containers:                cluster.Spec.Containers,
-			TLS:                       cluster.Spec.TLS,
+			TLS:                       nodeTLSConfig(cluster),
 			Config:                    cluster.Spec.Config,
 			ServerConfigMapName:       naming.ClusterConfigMapName(cluster.Name),
 			ServerConfigHash:          configHash,
 			ACLSecretName:             naming.ACLSecretName(cluster.Name),
 		},
 	}
+	// Propagate the tlsHash alongside serverConfigHash: reconcileTLS records the
+	// hash on the cluster in-memory; stamping it as the node's naming.AnnTLSHash
+	// annotation makes the resources builder roll the pod on a real cert change
+	// via the same machinery as the config hash (07 §3.4). Empty when TLS is off
+	// or the TLS leg has not computed a hash yet (no phantom roll).
+	stampTLSHash(node, cluster.Annotations[naming.AnnTLSHash])
+	return node
 }

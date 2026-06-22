@@ -18,7 +18,6 @@ package perconavalkeycluster
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -133,27 +132,6 @@ func TestDesiredNodesReplicasBeforePrimary(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("got[%d] = %+v, want %+v", i, got[i], want[i])
 		}
-	}
-}
-
-func TestUserDefinedACLLines(t *testing.T) {
-	t.Parallel()
-	c := newCluster()
-	c.Spec.Users = []valkeyv1alpha1.UserACLSpec{
-		{Name: "app", Enabled: true, Permissions: "~* +@all"},
-		{Name: "disabled", Enabled: false},
-		{Name: "nopassuser", Enabled: true, Nopass: true},
-	}
-	lines := userDefinedACLLines(c)
-	if len(lines) != 2 {
-		t.Fatalf("expected 2 enabled user lines, got %d: %v", len(lines), lines)
-	}
-	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "user app on ~* +@all") {
-		t.Fatalf("app line missing/wrong: %v", lines)
-	}
-	if !strings.Contains(joined, "user nopassuser on nopass") {
-		t.Fatalf("nopass line missing/wrong: %v", lines)
 	}
 }
 

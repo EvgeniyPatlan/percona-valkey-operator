@@ -1,0 +1,18 @@
+# Prometheus integration manifests (08 §3, §7.4). STATIC YAML — the operator
+# carries NO prometheus-operator Go dependency (decision: Prometheus via static
+# YAML). These reference monitoring.coreos.com/v1 CRDs, so this kustomization is
+# NOT folded into the default install bundle (deploy/bundle.yaml); apply it only
+# on clusters where the Prometheus Operator is installed:
+#
+#   kubectl apply -k config/prometheus
+#
+# Choose podmonitor.yaml (plaintext /metrics) OR podmonitor-tls.yaml (metrics
+# over TLS, 08 §3.3) — not both for the same cluster. The default resource list
+# wires the plaintext PodMonitor + the alert rules; uncomment the TLS variant as
+# needed.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - podmonitor.yaml
+  - prometheusrule.yaml
+  # - podmonitor-tls.yaml   # metrics-over-TLS variant (08 §3.3)

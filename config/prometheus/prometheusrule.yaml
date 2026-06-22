@@ -1,0 +1,230 @@
+# PrometheusRule alert catalogue for the Percona Operator for Valkey (08 §7.4).
+#
+# STATIC manifest (decision: Prometheus via static YAML; no prometheus-operator
+# Go dependency). Apply only when the Prometheus Operator is installed.
+#
+# Rules combine ENGINE metrics (data plane, from the redis_exporter-compatible
+# sidecar) with OPERATOR state mirrored via kube-state-metrics custom-resource-
+# state (control plane: the pvk_* gauges and mirrored Warning events — 08 §7.4).
+#
+# Role is ALWAYS derived from the engine (redis_master_link_up /
+# redis_connected_slaves), NEVER from node_index (08 §2.3).
+#
+# Replication-lag and no-replica alerts are grouped by (cluster, shard_index) so
+# each replica is diffed against its OWN shard's primary, never a global offset
+# (multi-primary cluster — 08 §7.4). Memory pressure is guarded with
+# redis_memory_max_bytes > 0 so maxmemory 0 (unlimited) never divides by zero.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: valkey-alerts
+  labels:
+    app.kubernetes.io/name: percona-valkey
+    app.kubernetes.io/managed-by: percona-valkey-operator
+    app.kubernetes.io/component: valkey
+    role: alert-rules
+spec:
+  groups:
+    # ---- Data-plane (engine metrics) ----------------------------------------
+    - name: valkey.dataplane
+      rules:
+        - alert: ValkeyExporterDown
+          expr: redis_up == 0
+          for: 2m
+          labels:
+            severity: high
+          annotations:
+            summary: "Valkey exporter/pod unreachable ({{ $labels.cluster }})"
+            description: >-
+              The exporter could not reach its co-located Valkey over loopback
+              for 2m (engine down, unreachable, or _exporter auth rejected).
+              Triage as a data-plane outage, not an operator fault (08 §2.5).
+
+        - alert: ValkeyClusterStateFail
+          expr: redis_cluster_state == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Valkey CLUSTER INFO cluster_state:fail ({{ $labels.cluster }})"
+            description: >-
+              A node reports cluster_state:fail; keys may fail until coverage and
+              quorum recover (08 §7.4).
+
+        - alert: ValkeySlotsUnassigned
+          expr: min by (cluster) (redis_cluster_slots_assigned) < 16384
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Valkey hash slots unassigned ({{ $labels.cluster }})"
+            description: >-
+              Fewer than 16384 hash slots are assigned; mirrors the operator's
+              SlotsAssigned=False condition (08 §7.4).
+
+        - alert: ValkeyPrimaryDownNoQuorum
+          expr: >-
+            count by (cluster) (redis_master_link_up == 1
+              or redis_connected_slaves >= 0) * 0
+              + (count by (cluster) (redis_cluster_known_nodes)
+                 - count by (cluster) (redis_up == 1))
+              >= count by (cluster) (redis_cluster_size)
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Valkey primary down without quorum ({{ $labels.cluster }})"
+            description: >-
+              Reachable slot-owning primaries fell below quorum; CLUSTER FAILOVER
+              cannot elect a new primary (08 §7.4). Role is read from the engine,
+              never from node_index (08 §2.3).
+
+        - alert: ValkeyReplicationBroken
+          expr: redis_master_link_up == 0
+          for: 3m
+          labels:
+            severity: high
+          annotations:
+            summary: "Valkey replica->primary link down ({{ $labels.cluster }})"
+            description: >-
+              master_link_status != up for 3m; no failover target if the primary
+              then dies (08 §7.4).
+
+        - alert: ValkeyReplicationLagHigh
+          expr: >-
+            (max by (cluster, shard_index) (redis_master_repl_offset)
+              - redis_slave_repl_offset) > 104857600
+          for: 5m
+          labels:
+            severity: high
+          annotations:
+            summary: "Valkey replication lag high ({{ $labels.cluster }} shard {{ $labels.shard_index }})"
+            description: >-
+              Per-shard replica offset trails its primary by >100MiB for 5m,
+              eroding RPO and graceful-failover safety. Grouped by
+              (cluster, shard_index) so each replica is diffed against its OWN
+              shard primary (08 §7.4).
+
+        - alert: ValkeyMemoryPressure
+          expr: >-
+            redis_memory_max_bytes > 0
+              and redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Valkey memory pressure ({{ $labels.cluster }})"
+            description: >-
+              used_memory is above 90% of maxmemory for 10m; evictions imminent.
+              Guarded with redis_memory_max_bytes > 0 so maxmemory 0 (unlimited)
+              never divides by zero (08 §7.4).
+
+        - alert: ValkeyEvictionSpike
+          expr: rate(redis_evicted_keys_total[5m]) > 100
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Valkey eviction spike ({{ $labels.cluster }})"
+            description: "Working set exceeds the memory budget (08 §7.4)."
+
+    # ---- Control-plane (operator state via kube-state-metrics) --------------
+    - name: valkey.controlplane
+      rules:
+        - alert: ValkeyClusterNotReady
+          expr: pvk_status_state{state="Ready"} != 1
+          for: 15m
+          labels:
+            severity: high
+          annotations:
+            summary: "Valkey cluster not Ready ({{ $labels.cluster }})"
+            description: >-
+              status.state has been != Ready for 15m (sustained control-plane
+              unhealthiness — 08 §7.4).
+
+        - alert: ValkeyClusterDegraded
+          expr: pvk_condition{type="Degraded",status="true"} == 1
+          for: 5m
+          labels:
+            severity: high
+          annotations:
+            summary: "Valkey cluster Degraded ({{ $labels.cluster }})"
+            description: >-
+              The Degraded condition is True for 5m
+              (NodeAddFailed/RebalanceFailed/PodUnschedulable — 08 §7.4).
+
+        - alert: ValkeyReconcileStuck
+          expr: >-
+            pvk_condition{type="Progressing",status="true"} == 1
+              and on (cluster) pvk_condition{type="Ready",status="true"} != 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Valkey reconcile not converging ({{ $labels.cluster }})"
+            description: >-
+              Progressing=True with Ready=False for 30m (e.g.
+              LiveConfigApplied=ApplyFailed — 08 §7.4).
+
+        - alert: ValkeyObservedGenerationLag
+          expr: >-
+            (pvk_metadata_generation - pvk_status_observed_generation) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Valkey observedGeneration lagging spec generation ({{ $labels.cluster }})"
+            description: >-
+              status.observedGeneration trails metadata.generation for 15m: the
+              operator has not finished reconciling the latest spec (contract
+              alert; mirrors a stalled reconcile — 08 §4.1, §7.4).
+
+        - alert: ValkeyLeaderThrash
+          expr: >-
+            sum by (cluster, shard_index) (
+              changes(redis_master_link_up[15m])
+            ) > 6
+          for: 5m
+          labels:
+            severity: high
+          annotations:
+            summary: "Valkey primary/leader thrashing ({{ $labels.cluster }} shard {{ $labels.shard_index }})"
+            description: >-
+              The replica->primary link flips repeatedly within 15m, indicating
+              failover thrash on a shard (role read from the engine, never from
+              node_index — 08 §2.3, §7.4). Correlate with FailoverFailed events.
+
+        - alert: ValkeyFailoverFailing
+          expr: rate(pvk_event_failover_failed_total[15m]) > 0
+          for: 5m
+          labels:
+            severity: high
+          annotations:
+            summary: "Valkey proactive failover failing ({{ $labels.cluster }})"
+            description: >-
+              Mirrored FailoverFailed/FailoverTimeout events during a roll
+              (08 §7.4).
+
+        - alert: ValkeyBackupFailed
+          expr: rate(pvk_event_backup_failed_total[1h]) > 0
+          for: 5m
+          labels:
+            severity: high
+          annotations:
+            summary: "Valkey backup failed ({{ $labels.cluster }})"
+            description: >-
+              A mirrored BackupFailed event fired, or last-success age exceeded
+              2x the schedule: the scheduled RDB backup is not landing in object
+              storage (08 §7.4).
+
+        - alert: ValkeyBackupStale
+          expr: >-
+            (time() - pvk_backup_last_success_timestamp_seconds) > 86400
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Valkey backup stale ({{ $labels.cluster }})"
+            description: >-
+              The last successful PerconaValkeyBackup is older than the SLO
+              window (durability drift — 08 §7.4, §8).

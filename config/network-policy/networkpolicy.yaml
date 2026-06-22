@@ -1,0 +1,86 @@
+# Default-deny NetworkPolicy perimeter for a Percona Operator for Valkey cluster
+# (07 §7 + the metrics rule in 08 §3.4).
+#
+# STATIC reference manifest mirroring exactly what the operator renders at
+# reconcile time (pkg/controller/perconavalkeycluster/networkpolicy.go). Ship it
+# for users who manage NetworkPolicy out-of-band, or as the golden shape the
+# operator-rendered policy is diffed against. Replace "valkey-sample" with your
+# cluster name and "monitoring" with your Prometheus namespace.
+#
+# Ports follow the Valkey contract: client 6379, cluster-bus 16379 (= client +
+# 10000), metrics 9121. The podSelector scopes the policy to one cluster's Valkey
+# pods; PolicyTypes lists Ingress+Egress so anything not explicitly allowed below
+# is DENIED. Cluster-bus rules are scoped by valkey.percona.com/cluster so one
+# cluster's gossip cannot reach another's pods (cross-cluster CLUSTER MEET
+# spoofing — B4).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valkey-sample-netpol
+  labels:
+    app.kubernetes.io/name: percona-valkey
+    app.kubernetes.io/instance: valkey-sample
+    app.kubernetes.io/managed-by: percona-valkey-operator
+    app.kubernetes.io/component: valkey
+spec:
+  podSelector:
+    matchLabels:
+      valkey.percona.com/cluster: valkey-sample
+      valkey.percona.com/component: valkey
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # client-ingress 6379: application data access (TLS + ACL). Narrow this
+    # podSelector to your application's pods in production.
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 6379
+    # operator-ingress 6379: _operator orchestration from the operator pod.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: valkey-operator
+      ports:
+        - protocol: TCP
+          port: 6379
+    # bus-intra 16379: gossip/heartbeat/failover coordination, scoped by cluster.
+    - from:
+        - podSelector:
+            matchLabels:
+              valkey.percona.com/cluster: valkey-sample
+      ports:
+        - protocol: TCP
+          port: 16379
+    # bus-data-intra 6379: replication stream + slot migration between nodes.
+    - from:
+        - podSelector:
+            matchLabels:
+              valkey.percona.com/cluster: valkey-sample
+      ports:
+        - protocol: TCP
+          port: 6379
+    # metrics-ingress 9121: Prometheus scrape from the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9121
+  egress:
+    # storage-egress 443: backup RDB upload to object storage (backup Jobs).
+    - ports:
+        - protocol: TCP
+          port: 443
+    # dns-egress 53: name resolution (UDP and TCP).
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

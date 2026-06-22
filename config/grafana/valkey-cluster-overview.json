@@ -1,0 +1,279 @@
+{
+  "__comment": "Percona Operator for Valkey - Cluster Overview dashboard (08 section 7.2). Panels cover cluster health, slot coverage, replication lag, memory/eviction, and ops/sec. Role-sensitive panels derive primary/replica from the ENGINE metrics redis_master_link_up / redis_connected_slaves, NEVER from node_index (08 section 2.3). Replication-lag is grouped by(shard_index) so each replica is diffed against its own shard primary. Ship as a grafana_dashboard-labelled ConfigMap for the Grafana sidecar.",
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "tags": ["valkey", "percona", "percona-valkey-operator"],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {}
+      },
+      {
+        "name": "cluster",
+        "label": "Cluster",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(redis_up, cluster)",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false,
+        "current": {}
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "refresh": "30s",
+  "title": "Valkey / Cluster Overview",
+  "uid": "percona-valkey-overview",
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Cluster Health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Cluster state (ok per node)",
+      "description": "redis_cluster_state == 1 means CLUSTER INFO reports cluster_state:ok.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "FAIL", "color": "red" } } },
+            { "type": "value", "options": { "1": { "text": "OK", "color": "green" } } }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "min(redis_cluster_state{cluster=\"$cluster\"})",
+          "legendFormat": "cluster_state"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Known nodes vs cluster size",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 1 },
+      "targets": [
+        {
+          "expr": "max(redis_cluster_known_nodes{cluster=\"$cluster\"})",
+          "legendFormat": "known_nodes"
+        },
+        {
+          "expr": "max(redis_cluster_size{cluster=\"$cluster\"})",
+          "legendFormat": "cluster_size (primaries)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Exporter / pod up (redis_up)",
+      "description": "redis_up == 0 means the exporter could not reach its co-located engine over loopback (data-plane signal, 08 section 2.5).",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 1 },
+      "targets": [
+        {
+          "expr": "redis_up{cluster=\"$cluster\"}",
+          "legendFormat": "{{pod}} (shard {{shard_index}})"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Slot Coverage",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Slots assigned (of 16384)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "max": 16384,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 16384 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "min(redis_cluster_slots_assigned{cluster=\"$cluster\"})",
+          "legendFormat": "slots_assigned"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Slots assigned vs ok",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 6, "w": 18, "x": 6, "y": 8 },
+      "targets": [
+        {
+          "expr": "min(redis_cluster_slots_assigned{cluster=\"$cluster\"})",
+          "legendFormat": "assigned"
+        },
+        {
+          "expr": "min(redis_cluster_slots_ok{cluster=\"$cluster\"})",
+          "legendFormat": "ok"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Replication",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Replication lag (bytes) by shard",
+      "description": "lag = max primary offset minus replica offset, grouped by(cluster, shard_index) so each replica is diffed against its OWN shard primary (08 section 7.4).",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "targets": [
+        {
+          "expr": "max by (cluster, shard_index) (redis_master_repl_offset{cluster=\"$cluster\"}) - redis_slave_repl_offset{cluster=\"$cluster\"}",
+          "legendFormat": "shard {{shard_index}} / {{pod}}"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Replica link up (role from engine, not node_index)",
+      "description": "redis_master_link_up is read directly from the engine; a pod with the link up is a current replica of its shard primary regardless of node_index (08 section 2.3).",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 15 },
+      "targets": [
+        {
+          "expr": "redis_master_link_up{cluster=\"$cluster\"}",
+          "legendFormat": "shard {{shard_index}} / {{pod}}"
+        },
+        {
+          "expr": "redis_connected_slaves{cluster=\"$cluster\"}",
+          "legendFormat": "connected_slaves {{pod}}"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Memory & Eviction",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Memory used vs maxmemory",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "targets": [
+        {
+          "expr": "redis_memory_used_bytes{cluster=\"$cluster\"}",
+          "legendFormat": "used {{pod}}"
+        },
+        {
+          "expr": "redis_memory_max_bytes{cluster=\"$cluster\"} > 0",
+          "legendFormat": "max {{pod}}"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Eviction & expiration rate + hit ratio",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 23 },
+      "targets": [
+        {
+          "expr": "sum by (cluster) (rate(redis_evicted_keys_total{cluster=\"$cluster\"}[5m]))",
+          "legendFormat": "evicted/s"
+        },
+        {
+          "expr": "sum by (cluster) (rate(redis_expired_keys_total{cluster=\"$cluster\"}[5m]))",
+          "legendFormat": "expired/s"
+        },
+        {
+          "expr": "sum(rate(redis_keyspace_hits_total{cluster=\"$cluster\"}[5m])) / clamp_min(sum(rate(redis_keyspace_hits_total{cluster=\"$cluster\"}[5m])) + sum(rate(redis_keyspace_misses_total{cluster=\"$cluster\"}[5m])), 1)",
+          "legendFormat": "hit ratio"
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "Throughput (Ops/sec)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 }
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Instantaneous ops/sec by shard",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 31 },
+      "targets": [
+        {
+          "expr": "sum by (shard_index) (redis_instantaneous_ops_per_sec{cluster=\"$cluster\"})",
+          "legendFormat": "shard {{shard_index}}"
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "Connected / blocked / rejected clients",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 31 },
+      "targets": [
+        {
+          "expr": "sum by (cluster) (redis_connected_clients{cluster=\"$cluster\"})",
+          "legendFormat": "connected"
+        },
+        {
+          "expr": "sum by (cluster) (redis_blocked_clients{cluster=\"$cluster\"})",
+          "legendFormat": "blocked"
+        },
+        {
+          "expr": "sum by (cluster) (rate(redis_rejected_connections_total{cluster=\"$cluster\"}[5m]))",
+          "legendFormat": "rejected/s"
+        }
+      ]
+    }
+  ]
+}

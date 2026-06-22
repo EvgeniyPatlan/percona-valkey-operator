@@ -1,0 +1,25 @@
+# Grafana dashboards for the Percona Operator for Valkey (08 section 7.2).
+# STATIC manifests — packaged as a grafana_dashboard-labelled ConfigMap so the
+# Grafana sidecar (kube-prometheus-stack convention) auto-imports them. Not part
+# of the operator install bundle; apply alongside your monitoring stack:
+#
+#   kubectl apply -k config/grafana
+#
+# Role-sensitive panels derive primary/replica from the engine metrics
+# redis_master_link_up / redis_connected_slaves, never from node_index
+# (08 section 2.3); replication lag is grouped by(shard_index).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator:
+  - name: valkey-grafana-dashboards
+    options:
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/managed-by: percona-valkey-operator
+      disableNameSuffixHash: true
+    files:
+      - valkey-cluster-overview.json
+
+generatorOptions:
+  disableNameSuffixHash: true

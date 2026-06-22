@@ -47,7 +47,57 @@ const (
 	// parent-stamped server-config roll hash. A change to its value rolls the
 	// single-replica workload (docs/architecture/04-control-plane.md §11).
 	AnnServerConfigHash = labelPrefix + "server-config-hash"
+
+	// AnnTLSHash is the pod-template annotation that carries the parent-stamped
+	// TLS hash (SHA-256 of the cert material identity). A real cert change bumps
+	// the value and rolls the workload via the same machinery as
+	// AnnServerConfigHash, replicas-before-primary with proactive failover
+	// (M5 GO-5.8; docs/architecture/07-security.md §3.4). The hash changes ONLY on
+	// a real cert change, never on an unrelated reconcile.
+	AnnTLSHash = labelPrefix + "tls-hash"
+
+	// tlsSecretSuffix is the suffix on the operator-provisioned cert-manager TLS
+	// Secret (internal-<cluster>-tls). In secret-ref mode the user supplies the
+	// Secret name directly via spec.tls.secretName instead.
+	tlsSecretSuffix = "-tls"
+
+	// TLSMountPath is the read-only mount point for the TLS cert material
+	// (ca.crt/tls.crt/tls.key) inside every Valkey pod. FROZEN M5 contract: the
+	// rendered tls-cert-file/tls-key-file/tls-ca-cert-file directives
+	// (pkg/valkey/config.go) and the exporter --tls-ca-cert-file flag and the
+	// valkey-cli probe --cacert/--cert/--key flags all reference this single
+	// path (docs/architecture/07-security.md §3.1).
+	TLSMountPath = "/etc/valkey/tls"
+
+	// TLSSecretKeyCA is the CA-bundle data key in the three-key
+	// kubernetes.io/tls-shaped TLS Secret (07 §3.1). FROZEN M5 contract.
+	TLSSecretKeyCA = "ca.crt"
+	// TLSSecretKeyCert is the server-certificate data key in the TLS Secret.
+	TLSSecretKeyCert = "tls.crt"
+	// TLSSecretKeyKey is the server private-key data key in the TLS Secret.
+	TLSSecretKeyKey = "tls.key"
 )
+
+// Exporter sidecar credential env var names (the redis_exporter convention).
+// FROZEN M5 contract: the exporter authenticates as the _exporter system user
+// with its password sourced from the internal-<cluster>-system-passwords Secret
+// (docs/architecture/08-observability.md §2.4).
+const (
+	// EnvExporterUser is the env var carrying the _exporter ACL username.
+	EnvExporterUser = "REDIS_USER"
+	// EnvExporterPassword is the env var carrying the _exporter password
+	// (injected via a SecretKeyRef to internal-<cluster>-system-passwords, key
+	// _exporter).
+	EnvExporterPassword = "REDIS_PASSWORD"
+)
+
+// TLSSecretName returns the operator-provisioned TLS Secret name for cert-manager
+// mode: internal-<cluster>-tls. cert-manager writes ca.crt/tls.crt/tls.key into
+// it from the provisioned Certificate (M5 GO-5.6, docs/architecture/07-security.md
+// §3.3). In secret-ref mode the Secret name comes from spec.tls.secretName instead.
+func TLSSecretName(cluster string) string {
+	return internalPrefix + cluster + tlsSecretSuffix
+}
 
 // NodeWorkloadName returns the StatefulSet/Deployment name for a ValkeyNode:
 // valkey-<node> (Charter, 03 §6.1).

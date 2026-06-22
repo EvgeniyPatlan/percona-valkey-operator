@@ -89,6 +89,8 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile runs the cluster pipeline phases 0-15 (04 §2.1). Wave 2a stops at
@@ -282,9 +284,23 @@ func (r *Reconciler) reconcileInfra(
 	if err := r.reconcilePodDisruptionBudget(ctx, cluster); err != nil {
 		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonPodDisruptionBudgetError, err)
 	}
+	// Phase 2b: NetworkPolicy — rendered alongside the Service/PDB infra (the
+	// data-plane perimeter is part of bringing the cluster's infra up, 07 §7).
+	// SEAM filled by the NetworkPolicy leg (M5 GO-5.9); no-op stub until then.
+	if err := r.reconcileNetworkPolicy(ctx, cluster); err != nil {
+		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonNetworkPolicyError, err)
+	}
 	// Phase 3: ACL / system users.
 	if err := r.reconcileUsersACL(ctx, cluster); err != nil {
 		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonUsersACLError, err)
+	}
+	// Phase 3b: TLS — provision/validate the cert Secret and propagate the tlsHash
+	// BEFORE the ConfigMap+nodes so the cert exists before any pod mounts it (the
+	// rendered tls-* directives reference naming.TLSMountPath, 07 §3.3). A
+	// malformed/missing cert fails CLOSED with Degraded/TLSError. SEAM filled by
+	// the TLS leg (M5 GO-5.6/5.8); no-op stub until then.
+	if err := r.reconcileTLS(ctx, cluster); err != nil {
+		return nil, true, ctrl.Result{}, r.degrade(ctx, cluster, ReasonTLSError, err)
 	}
 	// Phase 4: ConfigMap + roll hash.
 	configHash, err := r.upsertConfigMap(ctx, cluster)

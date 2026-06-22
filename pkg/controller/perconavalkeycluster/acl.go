@@ -21,8 +21,11 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
@@ -41,23 +44,41 @@ const passwordLength = 26
 // passwordAlphabet is the alphanumeric set for generated system passwords.
 const passwordAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
+// systemUserPrefix marks reserved system-user names. user-defined names starting
+// with it are rejected (CEL already enforces this; the renderer double-checks so
+// a spec that slips past admission can never shadow a system user, 07 §4.3).
+const systemUserPrefix = "_"
+
+// EventUsersACLUpdated is emitted when the rendered ACL Secret's content changes
+// on a subsequent reconcile (a real user/password/grant change). Declared here
+// in the ACL leg (not status.go) to keep the M5 seams disjoint; the create-time
+// event EventUsersACLCreated lives in status.go (M3 vocabulary).
+const EventUsersACLUpdated = "UsersAclUpdated"
+
 // reconcileUsersACL renders the internal-<cluster>-acl Secret (type
 // valkey.io/acl) from the canonical _operator/_exporter/_backup system users
-// (verbatim least-privilege, 07 §4.3) plus a passthrough of spec.users, filling
-// each #<sha256-hex> slot from internal-<cluster>-system-passwords (created here
-// with 26-char random passwords if absent). _exporter is rendered only when the
-// exporter is enabled. 04 §2.1 step3.
+// (verbatim least-privilege, 07 §4.3) plus the full user-defined spec.users[]
+// grammar (commands/keys/channels/passwords), filling each #<sha256-hex> slot
+// from internal-<cluster>-system-passwords (created here with 26-char random
+// passwords if absent). _exporter is rendered only when the exporter is enabled.
+// 04 §2.1 step3.
 //
-// Wave 2a passes spec.users through minimally (enabled users + their verbatim
-// `permissions` rule string). The full user-defined ACL grammar (keys/channels/
-// commands, multi-password rotation) is M5.
+// Fails CLOSED (returns a non-nil error → Degraded/UsersAclError via the caller)
+// when a user's referenced password Secret/key is missing, so a misconfigured
+// user never silently renders a passwordless ACL line (07 §1, §8.2). Error
+// messages reference Secret names/keys only, never password values.
 func (r *Reconciler) reconcileUsersACL(ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster) error {
 	passwords, err := r.ensureSystemPasswords(ctx, cluster)
 	if err != nil {
 		return err
 	}
 
-	content := valkey.RenderUsersACL(cluster.Spec.Exporter.Enabled, passwords, userDefinedACLLines(cluster))
+	userLines, err := r.buildUserDefinedACLLines(ctx, cluster)
+	if err != nil {
+		return err
+	}
+
+	content := valkey.RenderUsersACL(cluster.Spec.Exporter.Enabled, passwords, userLines)
 
 	secret := &corev1.Secret{}
 	secret.Name, secret.Namespace = naming.ACLSecretName(cluster.Name), cluster.Namespace
@@ -70,32 +91,90 @@ func (r *Reconciler) reconcileUsersACL(ctx context.Context, cluster *valkeyv1alp
 	if err != nil {
 		return err
 	}
-	if res == controllerutil.OperationResultCreated {
+	switch res {
+	case controllerutil.OperationResultCreated:
 		r.recorder.Eventf(cluster, secret, eventNormal, EventUsersACLCreated, "CreateUsersAcl", "Created ACL Secret %s", secret.Name)
+	case controllerutil.OperationResultUpdated:
+		r.recorder.Eventf(cluster, secret, eventNormal, EventUsersACLUpdated, "UpdateUsersAcl", "Updated ACL Secret %s", secret.Name)
 	}
 	return nil
 }
 
-// userDefinedACLLines renders a minimal `user <name> on ... <permissions>` line
-// per enabled spec.users entry (M5 will render the full grammar). Disabled users
-// are skipped. The lines are sorted deterministically by RenderUsersACL.
-func userDefinedACLLines(cluster *valkeyv1alpha1.PerconaValkeyCluster) []string {
+// buildUserDefinedACLLines renders the full `user <name> ...` line per enabled
+// spec.users entry via valkey.BuildUserACL, fetching each user's password(s)
+// from its passwordSecret and SHA-256-hashing them for multi-password rotation.
+// Disabled users are skipped (they are not rendered at all rather than emitted
+// `off`, matching M3 behaviour so a disabled user adds no line). Names starting
+// with "_" are skipped defensively (reserved for system users; CEL rejects them
+// at admission). The lines are sorted deterministically by RenderUsersACL.
+func (r *Reconciler) buildUserDefinedACLLines(ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster) ([]string, error) {
 	lines := make([]string, 0, len(cluster.Spec.Users))
 	for i := range cluster.Spec.Users {
 		u := cluster.Spec.Users[i]
 		if !u.Enabled {
 			continue
 		}
-		line := "user " + u.Name + " on"
-		if u.Nopass {
-			line += " nopass"
+		if strings.HasPrefix(u.Name, systemUserPrefix) {
+			// Reserved for system users; CEL rejects this at admission. Skip rather
+			// than render so a spec that slipped past admission cannot shadow a
+			// system user line.
+			continue
 		}
-		if u.Permissions != "" {
-			line += " " + u.Permissions
+
+		var pwHashes []string
+		// resetpass/nopass do not consult the password Secret; only the default
+		// (hashed-password) path needs to fetch credentials.
+		if !u.Resetpass && !u.Nopass {
+			hashes, err := r.fetchUserPasswordHashes(ctx, cluster.Namespace, u)
+			if err != nil {
+				return nil, err
+			}
+			pwHashes = hashes
 		}
-		lines = append(lines, line)
+
+		lines = append(lines, valkey.BuildUserACL(u, pwHashes))
 	}
-	return lines
+	return lines, nil
+}
+
+// fetchUserPasswordHashes reads the user's password Secret and returns the
+// "#<sha256-hex>" hash tokens for each referenced key, in the user's declared
+// key order (deterministic) for multi-password rotation (07 §4.4). When
+// passwordSecret.keys is empty it defaults to the single key equal to the
+// secret name's user — per 03 §2.7 the keys default to [name]; here name = the
+// user name. Fails CLOSED if the Secret or any referenced key is missing/empty
+// so a misconfigured user never renders a passwordless line (07 §1, §8.2).
+func (r *Reconciler) fetchUserPasswordHashes(ctx context.Context, namespace string, u valkeyv1alpha1.UserACLSpec) ([]string, error) {
+	secretName := u.PasswordSecret.Name
+	if secretName == "" {
+		// Defaulting normally fills this in (CheckNSetDefaults), but fail closed
+		// defensively rather than read an empty name.
+		return nil, fmt.Errorf("user %q: passwordSecret.name is empty", u.Name)
+	}
+
+	keys := u.PasswordSecret.Keys
+	if len(keys) == 0 {
+		// Default to a single key named after the user (03 §2.7 keys default).
+		keys = []string{u.Name}
+	}
+
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("user %q: password Secret %q not found", u.Name, secretName)
+		}
+		return nil, fmt.Errorf("user %q: get password Secret %q: %w", u.Name, secretName, err)
+	}
+
+	hashes := make([]string, 0, len(keys))
+	for _, key := range keys {
+		val, ok := secret.Data[key]
+		if !ok || len(val) == 0 {
+			return nil, fmt.Errorf("user %q: password Secret %q missing key %q", u.Name, secretName, key)
+		}
+		hashes = append(hashes, valkey.HashACLPassword(string(val)))
+	}
+	return hashes, nil
 }
 
 // ensureSystemPasswords reads (or creates) the internal-<cluster>-system-passwords

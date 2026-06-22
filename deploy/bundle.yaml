@@ -7169,6 +7169,107 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
+  labels:
+    app.kubernetes.io/managed-by: percona-valkey-operator
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+  name: percona-valkey-cluster-admin
+rules:
+- apiGroups:
+  - valkey.percona.com
+  resources:
+  - perconavalkeyclusters
+  - perconavalkeybackups
+  - perconavalkeyrestores
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - valkey.percona.com
+  resources:
+  - perconavalkeyclusters/status
+  - perconavalkeybackups/status
+  - perconavalkeyrestores/status
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - valkey.percona.com
+  resources:
+  - valkeynodes
+  - valkeynodes/status
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: percona-valkey-operator
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+  name: percona-valkey-cluster-editor
+rules:
+- apiGroups:
+  - valkey.percona.com
+  resources:
+  - perconavalkeyclusters
+  - perconavalkeybackups
+  - perconavalkeyrestores
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - valkey.percona.com
+  resources:
+  - perconavalkeyclusters/status
+  - perconavalkeybackups/status
+  - perconavalkeyrestores/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: percona-valkey-operator
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+  name: percona-valkey-cluster-viewer
+rules:
+- apiGroups:
+  - valkey.percona.com
+  resources:
+  - perconavalkeyclusters
+  - perconavalkeybackups
+  - perconavalkeyrestores
+  - valkeynodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - valkey.percona.com
+  resources:
+  - perconavalkeyclusters/status
+  - perconavalkeybackups/status
+  - perconavalkeyrestores/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
   name: valkey-operator
 rules:
 - apiGroups:
@@ -7231,9 +7332,33 @@ rules:
   - list
   - watch
 - apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
   verbs:
   - create
   - delete

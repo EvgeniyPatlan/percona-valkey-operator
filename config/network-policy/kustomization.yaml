@@ -1,0 +1,12 @@
+# Static NetworkPolicy perimeter (07 §7, 08 §3.4). Mirrors the operator-rendered
+# policy for out-of-band management / golden-shape reference. Not folded into the
+# default install bundle (the operator renders the policy at reconcile time when
+# enabled); apply directly when managing NetworkPolicy by hand:
+#
+#   kubectl apply -k config/network-policy
+#
+# NOTE: enforcement requires a policy-enforcing CNI (Calico, Cilium, ...).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - networkpolicy.yaml

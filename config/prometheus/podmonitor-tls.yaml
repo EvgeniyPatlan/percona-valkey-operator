@@ -1,0 +1,45 @@
+# Metrics-TLS variant of the PodMonitor (08 §3.3). Use this instead of
+# podmonitor.yaml when the exporter serves /metrics over TLS (spec.tls enabled
+# on the cluster and the exporter wired to serve TLS).
+#
+# scheme: https + tlsConfig completes the loop. serverName MUST match a SAN on
+# the exporter serving cert: with per-pod scraping the cert is issued for the
+# pod's headless-service DNS, so serverName is the headless Service name
+# valkey-<cluster> (08 §3.3). The CA is read from the operator-provisioned /
+# referenced TLS Secret family.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: valkey-sample-tls
+  labels:
+    app.kubernetes.io/name: percona-valkey
+    app.kubernetes.io/instance: valkey-sample
+    app.kubernetes.io/managed-by: percona-valkey-operator
+    app.kubernetes.io/component: valkey
+spec:
+  selector:
+    matchLabels:
+      valkey.percona.com/cluster: valkey-sample
+      valkey.percona.com/component: valkey
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 20s
+      scrapeTimeout: 10s
+      scheme: https
+      tlsConfig:
+        ca:
+          secret:
+            name: valkey-sample-metrics-tls
+            key: ca.crt
+        serverName: valkey-sample
+        insecureSkipVerify: false
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_valkey_percona_com_cluster]
+          targetLabel: cluster
+        - sourceLabels: [__meta_kubernetes_pod_label_valkey_percona_com_shard_index]
+          targetLabel: shard_index
+        - sourceLabels: [__meta_kubernetes_pod_label_valkey_percona_com_node_index]
+          targetLabel: node_index
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod

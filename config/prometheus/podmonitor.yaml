@@ -1,0 +1,42 @@
+# PodMonitor for the Percona Operator for Valkey exporter sidecar (08 §3.1, §3.2).
+#
+# STATIC manifest — the operator does NOT depend on prometheus-operator Go types
+# (decision: Prometheus via static YAML). Apply this only when the
+# Prometheus Operator (monitoring.coreos.com CRDs) is installed in the cluster.
+#
+# The placeholders <cluster> and <namespace> are filled by the helm `valkey-db`
+# chart / by hand; this base targets a cluster named "valkey-sample". The
+# PodMonitor scrapes each Valkey pod's exporter container directly (per-pod
+# discovery preserves the operator's shard/node labels — 08 §2.3).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: valkey-sample
+  labels:
+    app.kubernetes.io/name: percona-valkey
+    app.kubernetes.io/instance: valkey-sample
+    app.kubernetes.io/managed-by: percona-valkey-operator
+    app.kubernetes.io/component: valkey
+spec:
+  # Select every Valkey pod of the cluster by the operator's cluster label.
+  selector:
+    matchLabels:
+      valkey.percona.com/cluster: valkey-sample
+      valkey.percona.com/component: valkey
+  podMetricsEndpoints:
+    # Named exporter port (9121). The exporter authenticates to the local engine
+    # as _exporter over loopback; the /metrics endpoint itself is plaintext here.
+    # For metrics-over-TLS use config/prometheus/podmonitor-tls.yaml instead.
+    - port: metrics
+      path: /metrics
+      interval: 20s
+      scrapeTimeout: 10s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_valkey_percona_com_cluster]
+          targetLabel: cluster
+        - sourceLabels: [__meta_kubernetes_pod_label_valkey_percona_com_shard_index]
+          targetLabel: shard_index
+        - sourceLabels: [__meta_kubernetes_pod_label_valkey_percona_com_node_index]
+          targetLabel: node_index
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod

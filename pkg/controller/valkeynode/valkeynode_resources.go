@@ -60,12 +60,17 @@ const (
 	aclMountPath    = "/config/users"
 	aclFilePath     = "/config/users/users.acl"
 	tlsVolName      = "valkey-tls"
-	tlsMountPath    = "/config/tls"
+	// tlsMountPath is the read-only TLS cert mount point. FROZEN M5 contract: it
+	// is the single naming.TLSMountPath shared with the config renderer
+	// (pkg/valkey/config.go tls-*-file directives) so the mounted files and the
+	// rendered paths always agree (07 §3.1).
+	tlsMountPath = naming.TLSMountPath
 
-	// TLS Secret data keys (03 §2.8).
-	tlsKeyCA   = "ca.crt"
-	tlsKeyCert = "tls.crt"
-	tlsKeyKey  = "tls.key"
+	// TLS Secret data keys (03 §2.8 / 07 §3.1) — the single naming.TLSSecretKey*
+	// constants so the mount and the renderer reference identical key names.
+	tlsKeyCA   = naming.TLSSecretKeyCA
+	tlsKeyCert = naming.TLSSecretKeyCert
+	tlsKeyKey  = naming.TLSSecretKeyKey
 
 	// Probe thresholds (OQ-2.4 interim: PXC/PSMDB-style defaults). Startup is
 	// generous so a large RDB/AOF load does not trip liveness; liveness/readiness
@@ -218,29 +223,64 @@ func buildServerContainer(node *valkeyv1alpha1.ValkeyNode) corev1.Container {
 	return c
 }
 
+// exporterScrapeArgs returns the exporter args for scraping the co-located Valkey
+// over loopback, plus any TLS VolumeMounts. This is the TLS-aware metrics-option
+// seam: when spec.tls is set the exporter dials rediss:// and validates the local
+// node against the shared CA mounted at naming.TLSMountPath (08 §2.4); otherwise
+// it dials plain redis:// over loopback. The metrics-TLS *serving* side
+// (spec.exporter.tls, scheme=https on the PodMonitor) is an OPS/observability-leg
+// concern (GO-5.x / OPS-5.3, OQ-2) layered on top of these scrape args and is
+// deliberately not wired here.
+func exporterScrapeArgs(node *valkeyv1alpha1.ValkeyNode) (args []string, mounts []corev1.VolumeMount) {
+	if node.Spec.TLS != nil {
+		args = []string{
+			fmt.Sprintf("--redis.addr=rediss://localhost:%d", portClient),
+			fmt.Sprintf("--tls-ca-cert-file=%s/%s", tlsMountPath, tlsKeyCA),
+			fmt.Sprintf("--web.listen-address=:%d", portExporter),
+		}
+		mounts = []corev1.VolumeMount{{Name: tlsVolName, MountPath: tlsMountPath, ReadOnly: true}}
+		return args, mounts
+	}
+	args = []string{
+		fmt.Sprintf("--redis.addr=redis://localhost:%d", portClient),
+		fmt.Sprintf("--web.listen-address=:%d", portExporter),
+	}
+	return args, nil
+}
+
+// exporterCredEnv returns the _exporter auth env: the username plus the password
+// injected via a SecretKeyRef to internal-<cluster>-system-passwords[key
+// _exporter] (the redis_exporter REDIS_USER/REDIS_PASSWORD convention, 08 §2.4).
+// The ref is Optional so a standalone ValkeyNode (created without a parent
+// cluster, hence without the system-passwords Secret) still schedules; in a
+// cluster the parent always provisions the Secret first (GO-5.3). The env var
+// names + Secret key are the FROZEN M5 contract (naming.EnvExporter*).
+func exporterCredEnv(node *valkeyv1alpha1.ValkeyNode) []corev1.EnvVar {
+	cluster := naming.NodeCluster(node.Name, node.Labels)
+	return []corev1.EnvVar{
+		{Name: naming.EnvExporterUser, Value: naming.SystemUserExporter},
+		{
+			Name: naming.EnvExporterPassword,
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: naming.SystemPasswordsSecretName(cluster)},
+				Key:                  naming.SystemUserExporter,
+				Optional:             ptrTo(true),
+			}},
+		},
+	}
+}
+
 // buildExporterSidecar builds the exporter sidecar container, or nil when the
-// exporter is disabled. It authenticates as _exporter with the password sourced
-// from internal-<cluster>-system-passwords (OQ-2.1/OQ-2.3 interim: derive the
-// Secret name by Charter convention; inject via REDIS_PASSWORD secretKeyRef per
-// the redis_exporter convention). It has its OWN readiness so its outage never
-// marks Valkey unready (08 §2.4).
+// exporter is disabled. It serves /metrics on port 9121, authenticates as
+// _exporter (exporterCredEnv) and scrapes the local engine over loopback (TLS
+// when spec.tls is set, exporterScrapeArgs). It has its OWN HTTP readiness probe
+// so its outage never marks Valkey unready or triggers a failover (08 §2.4, §6).
 func buildExporterSidecar(node *valkeyv1alpha1.ValkeyNode) *corev1.Container {
 	if !node.Spec.Exporter.Enabled {
 		return nil
 	}
-	cluster := naming.NodeCluster(node.Name, node.Labels)
 
-	scheme := "redis"
-	var mounts []corev1.VolumeMount
-	args := []string{fmt.Sprintf("--redis.addr=%s://localhost:%d", scheme, portClient)}
-	if node.Spec.TLS != nil {
-		scheme = "rediss"
-		args = []string{
-			fmt.Sprintf("--redis.addr=%s://localhost:%d", scheme, portClient),
-			fmt.Sprintf("--tls-ca-cert-file=%s/%s", tlsMountPath, tlsKeyCA),
-		}
-		mounts = append(mounts, corev1.VolumeMount{Name: tlsVolName, MountPath: tlsMountPath, ReadOnly: true})
-	}
+	args, mounts := exporterScrapeArgs(node)
 
 	resources := node.Spec.Exporter.Resources
 	if resources.Requests == nil && resources.Limits == nil {
@@ -253,20 +293,10 @@ func buildExporterSidecar(node *valkeyv1alpha1.ValkeyNode) *corev1.Container {
 	}
 
 	return &corev1.Container{
-		Name:  exporterContainerName,
-		Image: image,
-		Args:  args,
-		Env: []corev1.EnvVar{
-			{Name: "REDIS_USER", Value: naming.SystemUserExporter},
-			{
-				Name: "REDIS_PASSWORD",
-				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: naming.SystemPasswordsSecretName(cluster)},
-					Key:                  naming.SystemUserExporter,
-					Optional:             ptrTo(true),
-				}},
-			},
-		},
+		Name:         exporterContainerName,
+		Image:        image,
+		Args:         args,
+		Env:          exporterCredEnv(node),
 		Ports:        []corev1.ContainerPort{{Name: "metrics", ContainerPort: portExporter, Protocol: corev1.ProtocolTCP}},
 		VolumeMounts: mounts,
 		ReadinessProbe: &corev1.Probe{
@@ -391,6 +421,7 @@ func buildPodTemplate(node *valkeyv1alpha1.ValkeyNode, labels map[string]string)
 		},
 	}
 	applyConfigHashAnnotation(&tmpl, node.Spec.ServerConfigHash)
+	applyTLSHashAnnotation(&tmpl, node.Annotations[naming.AnnTLSHash])
 	return tmpl, nil
 }
 
@@ -405,6 +436,23 @@ func applyConfigHashAnnotation(tmpl *corev1.PodTemplateSpec, hash string) {
 		tmpl.Annotations = map[string]string{}
 	}
 	tmpl.Annotations[naming.AnnServerConfigHash] = hash
+}
+
+// applyTLSHashAnnotation stamps the parent-supplied TLS hash onto the pod-template
+// annotations VERBATIM. The cluster controller (M5 GO-5.8 tls_rotation) computes
+// the hash from the cert material and stamps naming.AnnTLSHash onto the ValkeyNode
+// object; this propagates it onto the pod template so a real cert change rolls the
+// single-replica workload through the SAME machinery as the config hash (07 §3.4).
+// Empty (TLS off / no hash yet) leaves the annotation absent, so it never causes a
+// phantom roll. The value changes ONLY on a real cert change.
+func applyTLSHashAnnotation(tmpl *corev1.PodTemplateSpec, hash string) {
+	if hash == "" {
+		return
+	}
+	if tmpl.Annotations == nil {
+		tmpl.Annotations = map[string]string{}
+	}
+	tmpl.Annotations[naming.AnnTLSHash] = hash
 }
 
 // buildStatefulSet builds the 1-replica durable StatefulSet with a
