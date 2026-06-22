@@ -1,0 +1,44 @@
+# Pre-commit hooks for percona-valkey-operator. Install with:
+#   pip install pre-commit && pre-commit install
+# Run on all files: pre-commit run --all-files
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: mixed-line-ending
+
+  - repo: local
+    hooks:
+      - id: go-mod-tidy
+        name: go mod tidy
+        entry: bash -c 'GOTOOLCHAIN=auto go mod tidy && git diff --exit-code go.mod go.sum'
+        language: system
+        pass_filenames: false
+        files: '(\.go|go\.mod|go\.sum)$'
+
+      - id: gofmt
+        name: gofmt
+        entry: bash -c 'gofmt -s -l . | (! grep .)'
+        language: system
+        pass_filenames: false
+        files: '\.go$'
+
+      - id: go-vet
+        name: go vet
+        entry: bash -c 'GOTOOLCHAIN=auto go vet ./...'
+        language: system
+        pass_filenames: false
+        files: '\.go$'
+
+      - id: make-check-generate
+        name: make check-generate
+        entry: bash -c 'make check-generate'
+        language: system
+        pass_filenames: false
+        files: '(_types\.go|\.go|kustomization\.yaml)$'
+        stages: [pre-push]

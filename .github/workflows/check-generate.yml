@@ -1,0 +1,25 @@
+name: check-generate
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check-generate:
+    name: CRD / deepcopy / RBAC drift gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: regenerate manifests + deepcopy
+        run: make manifests generate
+      - name: fail on drift
+        run: |
+          git diff --exit-code || \
+            (echo "::error::generated artifacts are stale — run 'make generate manifests' and commit"; exit 1)

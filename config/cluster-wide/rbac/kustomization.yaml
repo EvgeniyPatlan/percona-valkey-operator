@@ -1,0 +1,13 @@
+# Cluster-wide RBAC: ServiceAccount + namespaced leader-election Role/RoleBinding
+# (the Lease is still namespaced) plus the cluster-scoped ClusterRole/
+# ClusterRoleBinding. Rendered to deploy/cw-rbac.yaml. Files are local to this
+# directory because kustomize forbids referencing files outside the
+# kustomization root.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- service_account.yaml
+- leader_election_role.yaml
+- leader_election_role_binding.yaml
+- cluster_role.yaml
+- cluster_role_binding.yaml

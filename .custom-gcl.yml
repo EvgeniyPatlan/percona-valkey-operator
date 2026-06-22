@@ -1,0 +1,13 @@
+# Builds a custom golangci-lint binary that bundles the controller-runtime
+# logcheck module plugin (structured-logging hygiene), per the upstream
+# valkey-operator / Percona trio convention.
+#
+# Build it with:  golangci-lint custom   (Makefile target `lint-config` validates
+# this file; CI builds ./bin/custom-gcl and runs it for the logcheck pass).
+version: v2.5.0
+name: custom-gcl
+destination: ./bin
+plugins:
+  - module: sigs.k8s.io/logtools
+    import: sigs.k8s.io/logtools/logcheck/pkg/plugin
+    version: v0.9.0

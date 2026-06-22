@@ -1,0 +1,51 @@
+name: publish
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: multi-arch buildx (PR = build-only, no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # On PRs: build both arches to prove the Dockerfile is multi-arch-ready,
+      # but DO NOT push (a multi-arch manifest list cannot --load locally).
+      - name: buildx (PR, no push)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=ci-${{ github.sha }}
+
+      # On main/tag: log in and push the multi-arch manifest list to perconalab/.
+      - name: Login to registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: buildx (push to perconalab)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: perconalab/valkey-operator:${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}

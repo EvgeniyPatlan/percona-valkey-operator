@@ -1,0 +1,11 @@
+# Restore — bootstrap a new cluster from a backup set (03 §11.4). backupName XOR
+# backupSource (CEL-enforced).
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyRestore
+metadata:
+  name: prod-restore-2026-06-22
+  namespace: valkey
+spec:
+  clusterName: prod-restored       # target cluster
+  backupName: prod-2026-06-22      # xor backupSource
+  strategy: NewCluster             # safest: rebuild from RDB, slot-coverage verified

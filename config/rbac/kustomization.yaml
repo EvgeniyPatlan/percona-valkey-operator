@@ -1,0 +1,12 @@
+# Namespaced RBAC base: ServiceAccount + manager Role/RoleBinding +
+# leader-election Role/RoleBinding. The manager Role gains CRD verbs in M1 via
+# controller-gen markers; in M0 it carries only the leader-election permissions
+# so the pod does not crash-loop (doc 04 §8).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- service_account.yaml
+- role.yaml
+- role_binding.yaml
+- leader_election_role.yaml
+- leader_election_role_binding.yaml

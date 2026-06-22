@@ -1,0 +1,43 @@
+# Permissions required for leader election (doc 04 §8). WITHOUT THESE, the
+# operator pod crash-loops on startup because controller-runtime cannot create
+# or renew its coordination.k8s.io Lease. This is a namespaced Role: the Lease
+# lives in the operator's own namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: valkey-operator-leader-election
+  labels:
+    app.kubernetes.io/name: percona-valkey-operator
+    app.kubernetes.io/managed-by: kustomize
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete

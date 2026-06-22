@@ -1,0 +1,9 @@
+# kuttl TestSuite config (PS/PG-style). The first real kuttl case (init-cluster)
+# needs a working cluster controller (M3); the matrix + Jenkins wiring land in
+# M8 (docs/architecture/11-testing-qa.md §3, §7). Empty tests/ in M0.
+apiVersion: kuttl.dev/v1beta1
+kind: TestSuite
+testDirs:
+  - e2e-tests/tests
+timeout: 180
+parallel: 4

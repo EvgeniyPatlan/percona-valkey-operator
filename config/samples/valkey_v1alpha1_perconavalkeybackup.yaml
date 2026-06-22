@@ -1,0 +1,11 @@
+# On-demand backup (03 §11.3). Minimal: clusterName + storageName + type; the
+# rest resolves from prod.spec.backup.storages.
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyBackup
+metadata:
+  name: prod-2026-06-22
+  namespace: valkey
+spec:
+  clusterName: prod
+  storageName: s3-primary          # resolved from prod.spec.backup.storages
+  type: full

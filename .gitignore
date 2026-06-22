@@ -1,0 +1,33 @@
+# Auto-downloaded, pinned tools (controller-gen, kustomize, setup-envtest, ...)
+/bin/
+# envtest binary assets
+/testbin/
+# Build output
+/build/_output/
+dist/
+
+# Test & coverage artifacts
+cover.out
+cover.html
+*.out
+*.test
+*.coverprofile
+
+# Custom golangci-lint binary built from .custom-gcl.yml
+/custom-gcl
+/golangci-lint-custom
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Go workspace
+go.work
+go.work.sum
+
+# Local kubeconfig / secrets used during dev (never commit real secrets)
+kubeconfig
+*.kubeconfig

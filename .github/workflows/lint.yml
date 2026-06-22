@@ -1,0 +1,39 @@
+name: lint
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  golangci:
+    name: golangci-lint v2 + fmt/vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -s -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt found unformatted files:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        run: make vet
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+          # goinstall compiles golangci-lint from source with the runner's Go
+          # (1.26 via .go-version) instead of downloading a prebuilt binary built
+          # with an older Go — required, else it refuses the go 1.26.0 target.
+          install-mode: goinstall
+          args: --timeout=5m
+      - name: lint config verify
+        run: make lint-config

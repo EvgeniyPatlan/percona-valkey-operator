@@ -1,0 +1,31 @@
+# Cluster-wide ClusterRole. Watches all namespaces (cw-bundle, doc 02 §7). In M0
+# it carries only leader-election + events (no CRD verbs yet — M1 regenerates).
+# Leader-election leases are still namespaced in practice, but a ClusterRole
+# grants the verbs cluster-wide for the single multi-tenant operator instance.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: valkey-operator
+  labels:
+    app.kubernetes.io/name: percona-valkey-operator
+    app.kubernetes.io/managed-by: kustomize
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch

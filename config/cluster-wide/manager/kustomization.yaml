@@ -1,0 +1,11 @@
+# Cluster-wide manager: the base Deployment with WATCH_NAMESPACE="" patched in.
+# Rendered to deploy/cw-operator.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../manager
+patches:
+- path: watch_all_namespaces_patch.yaml
+  target:
+    kind: Deployment
+    name: valkey-operator

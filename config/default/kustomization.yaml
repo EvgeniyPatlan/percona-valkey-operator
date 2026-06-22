@@ -1,0 +1,15 @@
+# Top-level namespaced overlay. Composes the CRD (empty in M0), RBAC, and the
+# manager Deployment into a single namespaced install rendered to
+# deploy/bundle.yaml by `make manifests`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Install into a dedicated namespace by default; override with `kustomize edit
+# set namespace` or a parent overlay.
+namespace: valkey-operator
+
+resources:
+- namespace.yaml
+- ../crd
+- ../rbac
+- ../manager

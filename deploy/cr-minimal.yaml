@@ -1,0 +1,16 @@
+# Minimal cache cluster (03 §11.1): no persistence, no TLS, no backup.
+# The has() guards keep this valid; marker defaults fill exporter={enabled:true},
+# podDisruptionBudget=Managed, replicas=1; CheckNSetDefaults fills shards stays 3,
+# image and crVersion.
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: cache
+  namespace: valkey
+spec:
+  mode: cluster
+  shards: 3
+  replicas: 1
+  workloadType: Deployment        # cache: no PVCs
+  # persistence omitted -> has() guards keep this valid
+  # exporter defaults to {enabled:true}; pdb defaults to Managed

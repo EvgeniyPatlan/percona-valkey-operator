@@ -1,0 +1,35 @@
+name: tests
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit + envtest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: go mod tidy is a no-op (deps are pinned)
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum || \
+            (echo "::error::go.mod/go.sum are not tidy — run 'go mod tidy' and commit"; exit 1)
+      - name: make test (unit + envtest with coverage)
+        run: make test
+      - name: coverage gate (>=80% on pkg/...)
+        run: |
+          # Coverage is measured on pkg/... only (excludes cmd/, generated, e2e)
+          # per docs/architecture/11-testing-qa.md §1. The tiny pkg/version,
+          # pkg/naming, pkg/platform logic is fully tested so 80% is reachable.
+          go test -coverprofile=cover.pkg.out ./pkg/... >/dev/null
+          total=$(go tool cover -func=cover.pkg.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "pkg coverage: ${total}%"
+          awk -v t="${total}" 'BEGIN { if (t+0 < 80.0) { print "::error::pkg coverage " t "% < 80%"; exit 1 } }'

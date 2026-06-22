@@ -1,0 +1,33 @@
+# DB-image sidecar build SKELETON. Compiles the three helper binaries that run
+# inside the Valkey pods (NOT the operator pod): valkey-backup, healthcheck,
+# peer-list. In M0 these are stubs (print "not implemented" and exit non-zero);
+# real logic lands in M4/M5. The final stage layers them onto the Valkey engine
+# base image (set VALKEY_BASE_IMAGE at build time).
+# (docs/architecture/02-repo-layout.md §6)
+
+# --- builder ---------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /workspace
+
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
+
+COPY cmd/ cmd/
+COPY pkg/ pkg/
+
+ENV CGO_ENABLED=0
+RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -o /out/valkey-backup ./cmd/valkey-backup && \
+    GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -o /out/healthcheck   ./cmd/healthcheck && \
+    GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -o /out/peer-list      ./cmd/peer-list
+
+# --- runtime ---------------------------------------------------------------
+# Base defaults to a placeholder; the real Valkey engine image is supplied at
+# build time once the DB image exists (M4/M5).
+ARG VALKEY_BASE_IMAGE=valkey/valkey:8-alpine
+FROM ${VALKEY_BASE_IMAGE}
+COPY --from=builder /out/valkey-backup /usr/local/bin/valkey-backup
+COPY --from=builder /out/healthcheck   /usr/local/bin/healthcheck
+COPY --from=builder /out/peer-list      /usr/local/bin/peer-list

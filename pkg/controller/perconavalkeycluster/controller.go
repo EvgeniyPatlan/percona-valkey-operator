@@ -1,0 +1,404 @@
+/*
+Copyright Percona LLC.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Package perconavalkeycluster implements the PerconaValkeyCluster (pvk)
+// controller: the user-facing topology controller. It renders the cluster's
+// Service/PDB/ACL Secret/ConfigMap, creates one ValkeyNode per (shard,node)
+// one-at-a-time, scrapes live CLUSTER state, and drives the strict bootstrap
+// join MEET -> ADDSLOTSRANGE -> REPLICATE until a healthy sharded cluster
+// forms. It NEVER touches a StatefulSet/PVC/pod directly — only ValkeyNode
+// specs + CLUSTER commands (docs/architecture/04-control-plane.md §1).
+//
+// Wave 2a implements the pipeline THROUGH bootstrap-to-formed (phases
+// 0-7,10-12,15). The scale-out (14), scale-in (13), rolling-update roll path
+// (in 6) and proactive/orphan failover (8,9) phases are deferred to Wave 2b;
+// each leaves a clean seam/TODO referencing its GO-3.x task id.
+package perconavalkeycluster
+
+import (
+	"context"
+	"time"
+
+	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
+	"valkey.percona.com/percona-valkey-operator/pkg/naming"
+	"valkey.percona.com/percona-valkey-operator/pkg/valkey"
+	"valkey.percona.com/percona-valkey-operator/pkg/version"
+)
+
+// Requeue intervals (04 §9 requeue taxonomy).
+const (
+	requeueFast   = 2 * time.Second  // made progress / waiting on convergence
+	requeueSteady = 30 * time.Second // healthy cluster periodic re-verify
+)
+
+// Reconciler owns the PerconaValkeyCluster topology. It holds an INJECTABLE
+// ClusterClientFactory so envtest drives bootstrap against a scripted fake
+// (there is no real Valkey under envtest, CR-18).
+type Reconciler struct {
+	client.Client
+	scheme        *runtime.Scheme
+	recorder      events.EventRecorder
+	clientFactory valkey.ClusterClientFactory
+	platform      valkeyv1alpha1.Platform
+	// skipNameValidation lets parallel envtest specs register more than one
+	// manager-backed controller of this kind in a single process.
+	skipNameValidation bool
+	// rolePoll, when set, overrides the proactive-failover role poll so envtest
+	// flips a target replica's role deterministically without a real engine or a
+	// wall-clock wait (defaults to defaultRolePoll). Injected only in tests.
+	rolePoll func(ctx context.Context, target *valkey.NodeState) valkey.Role
+}
+
+// roll context flows the live ClusterState into the phase-6 node stepping so the
+// roll path can order by LIVE role and proactively fail over a live primary
+// before rolling it (05 §6). It is scraped in phase 7 and threaded back into
+// phase 6 on the NEXT reconcile via a fresh scrape inside reconcileValkeyNodes
+// when a roll is actually pending (so a steady, no-roll pass never scrapes twice).
+
+// +kubebuilder:rbac:groups=valkey.percona.com,resources=perconavalkeyclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=valkey.percona.com,resources=perconavalkeyclusters/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=valkey.percona.com,resources=perconavalkeyclusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=valkey.percona.com,resources=valkeynodes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=valkey.percona.com,resources=valkeynodes/status,verbs=get
+// +kubebuilder:rbac:groups=valkey.percona.com,resources=perconavalkeybackups,verbs=get;list;watch
+// +kubebuilder:rbac:groups=valkey.percona.com,resources=perconavalkeyrestores,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+
+// Reconcile runs the cluster pipeline phases 0-15 (04 §2.1). Wave 2a stops at
+// "a healthy sharded cluster forms"; the deferred phases are no-op seams.
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("cluster", req.String())
+
+	// Phase 0: fetch + defaults + crVersion gate + deletion branch.
+	cluster := &valkeyv1alpha1.PerconaValkeyCluster{}
+	if err := r.Get(ctx, req.NamespacedName, cluster); err != nil {
+		// NotFound: the object is gone, GC reaps children via owner refs.
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if err := cluster.CheckNSetDefaults(ctx, r.platform); err != nil {
+		return ctrl.Result{}, r.fail(ctx, cluster, ReasonConfigMapError, err)
+	}
+	if newer, msg := crVersionNewerThanOperator(cluster); newer {
+		setCondition(cluster, CondReady, metav1.ConditionFalse, ReasonUnsupportedCRVersion, msg)
+		return ctrl.Result{}, r.writeStatus(ctx, cluster)
+	}
+
+	if !cluster.DeletionTimestamp.IsZero() {
+		// Phase 0 deletion branch: ordered teardown (replicas-before-primaries,
+		// shard by shard) then finalizer removal; owner-ref GC reaps the rest
+		// (04 §6.1, GO-3.19).
+		return r.handleDeletion(ctx, cluster)
+	}
+
+	// Register the teardown finalizers up front so a delete that arrives mid-life
+	// always finds them present (04 §6). Persisted now but the pipeline continues
+	// in the same pass (the in-memory object already carries them).
+	if err := r.ensureFinalizers(ctx, cluster); err != nil {
+		return ctrl.Result{}, r.fail(ctx, cluster, ReasonReconciling, err)
+	}
+
+	return r.reconcileCluster(ctx, log, cluster)
+}
+
+// reconcileCluster runs phases 1-15 once defaults/gate/deletion are resolved.
+// Each phase is idempotent and returns early with a short requeue on progress
+// (one effect per reconcile, 04 §2). Phases 1-6 (infra + node stepping) are in
+// reconcileInfra; the bootstrap-join phases 10-12 are in bootstrapJoin; this
+// keeps each function small while preserving the strict phase ordering.
+func (r *Reconciler) reconcileCluster(
+	ctx context.Context, log logr.Logger, cluster *valkeyv1alpha1.PerconaValkeyCluster,
+) (ctrl.Result, error) {
+	log.V(1).Info("reconciling cluster", "shards", cluster.Spec.Shards, "replicas", cluster.Spec.Replicas)
+	cluster.Status.Host = clusterHost(cluster)
+
+	// Phases 1-6: infrastructure + one-at-a-time ValkeyNode stepping.
+	nodes, done, res, err := r.reconcileInfra(ctx, cluster)
+	if err != nil || done {
+		return res, err
+	}
+
+	// Phase 7: scrape live ClusterState (needs ready nodes' podIPs).
+	state := r.getValkeyClusterState(ctx, nodes)
+	if state == nil {
+		// No ready nodes yet — wait for podIPs.
+		setCondition(cluster, CondProgressing, metav1.ConditionTrue, ReasonInitializing, "waiting for node podIPs")
+		setCondition(cluster, CondReady, metav1.ConditionFalse, ReasonInitializing, "no ready nodes to scrape yet")
+		if werr := r.writeStatus(ctx, cluster); werr != nil {
+			return ctrl.Result{}, werr
+		}
+		return ctrl.Result{RequeueAfter: requeueFast}, nil
+	}
+	defer state.CloseClients()
+
+	// Phases 8-9: recovery — promote orphaned replicas (TAKEOVER on quorum-loss +
+	// persistence-off, BEFORE forget) then FORGET stale in-gossip-only nodes
+	// (GO-3.17). TAKEOVER-before-FORGET keeps slots continuously owned (CR-5).
+	if done, res, err := r.recover(ctx, cluster, state, nodes); err != nil || done {
+		return res, err
+	}
+
+	// Phases 10-12: bootstrap join (MEET -> ADDSLOTSRANGE -> REPLICATE).
+	done, res, err = r.bootstrapJoin(ctx, cluster, state, nodes)
+	if err != nil || done {
+		return res, err
+	}
+
+	// Phases 13-14: scale-in drain+delete then scale-out rebalance, one effect per
+	// reconcile (GO-3.15 / GO-3.14). Both run only once the cluster is otherwise
+	// formed (bootstrap join above returned no progress).
+	if done, res, err := r.scale(ctx, cluster, state, nodes); err != nil || done {
+		return res, err
+	}
+
+	// Phase 15: verify & mark Ready (or specific False + requeue fast).
+	ready, err := r.verifyAndMarkReady(ctx, cluster, state)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if ready {
+		return ctrl.Result{RequeueAfter: requeueSteady}, nil
+	}
+	return ctrl.Result{RequeueAfter: requeueFast}, nil
+}
+
+// recover runs phases 8-9 (promoteOrphanedReplicas then forgetStaleNodes). Each
+// returns acted=true to short-circuit the pipeline with a fast requeue so the
+// next pass observes fresh state. The strict order (takeover BEFORE forget) keeps
+// slots continuously owned during a quorum-loss recovery (04 §2.1 steps 8-9).
+func (r *Reconciler) recover(
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster,
+	state *valkey.ClusterState, nodes *valkeyv1alpha1.ValkeyNodeList,
+) (bool, ctrl.Result, error) {
+	if acted, err := r.promoteOrphanedReplicas(ctx, cluster, state); err != nil {
+		return true, ctrl.Result{}, r.degrade(ctx, cluster, ReasonQuorumLost, err)
+	} else if acted {
+		return r.progressRequeue(ctx, cluster, "promoting orphaned replicas")
+	}
+	if acted, err := r.forgetStaleNodes(ctx, cluster, state, nodes); err != nil {
+		return true, ctrl.Result{}, r.fail(ctx, cluster, ReasonNodeForgetFailed, err)
+	} else if acted {
+		return r.progressRequeue(ctx, cluster, "forgetting stale nodes")
+	}
+	return false, ctrl.Result{}, nil
+}
+
+// scale runs phases 13-14 (scale-in then scale-out rebalance), one effect per
+// reconcile. handleScaleIn drains+deletes excess shards; rebalanceSlots issues a
+// single MIGRATESLOTS move toward balance (04 §2.1 steps 13-14).
+func (r *Reconciler) scale(
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster,
+	state *valkey.ClusterState, nodes *valkeyv1alpha1.ValkeyNodeList,
+) (bool, ctrl.Result, error) {
+	if acted, err := r.handleScaleIn(ctx, cluster, state, nodes); err != nil {
+		return true, ctrl.Result{}, r.fail(ctx, cluster, ReasonDrainFailed, err)
+	} else if acted {
+		return r.progressRequeue(ctx, cluster, "scaling in: draining/deleting excess shards")
+	}
+	if acted, err := r.rebalanceSlots(ctx, cluster, state); err != nil {
+		return true, ctrl.Result{}, r.fail(ctx, cluster, ReasonRebalanceFailed, err)
+	} else if acted {
+		setCondition(cluster, CondProgressing, metav1.ConditionTrue, ReasonRebalancingSlots, "rebalancing slots across shards")
+		if werr := r.writeStatus(ctx, cluster); werr != nil {
+			return true, ctrl.Result{}, werr
+		}
+		return true, ctrl.Result{RequeueAfter: requeueFast}, nil
+	}
+	return false, ctrl.Result{}, nil
+}
+
+// degrade records a Warning event, sets Degraded=True + Ready=False with the
+// reason, writes status and returns the error so controller-runtime backs off.
+// Used for genuine impairment (quorum loss) distinct from a transient infra
+// error (fail()).
+func (r *Reconciler) degrade(ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster, reason string, err error) error {
+	r.recorder.Eventf(cluster, nil, eventWarning, reason, reason, "%s", err.Error())
+	setCondition(cluster, CondDegraded, metav1.ConditionTrue, reason, err.Error())
+	setCondition(cluster, CondReady, metav1.ConditionFalse, reason, err.Error())
+	if werr := r.writeStatus(ctx, cluster); werr != nil {
+		logf.FromContext(ctx).Error(werr, "status writeback failed after cluster degrade")
+	}
+	return err
+}
+
+// gateAnnotation, when present and truthy on the cluster, blocks the step-6
+// ValkeyNode roll. It is the interim M3 hook for the M4 backup-running roll gate
+// / M6 restore pause gate (04 §4.2): until those controllers exist, an operator
+// (or a test) can set this annotation to hold rolls; M4/M6 will replace the
+// annotation read with a Watch-driven backup/restore-Running read. Recorded as
+// an OPEN QUESTION (OQ-3.E pause/gate mechanics).
+const gateAnnotation = "valkey.percona.com/gate-engine-roll"
+
+// shouldGateEngineRoll reports whether the step-6 ValkeyNode roll must be blocked
+// this pass — when a backup Job is Running (M4) or a restore requests pause (M6),
+// pod churn could corrupt the snapshot stream so the roll is held (04 §4.2). M3
+// has no backup/restore controllers, so it consults the interim gateAnnotation
+// hook; the result is genuinely data-dependent so the seam is real, not a stub.
+func (r *Reconciler) shouldGateEngineRoll(_ context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster) bool {
+	// TODO(M4/M6): replace the annotation read with a Watch-driven check of
+	// PerconaValkeyBackup Running / PerconaValkeyRestore pause-requested.
+	v, ok := cluster.Annotations[gateAnnotation]
+	return ok && (v == "true" || v == "1")
+}
+
+// reconcileInfra runs phases 1-6: headless Service, PDB, ACL Secret, ConfigMap
+// (+ roll hash), list nodes, and the one-at-a-time ValkeyNode stepping. It
+// returns the listed nodes plus done=true (with a result) when the caller should
+// return early (an error or a node not yet converged).
+func (r *Reconciler) reconcileInfra(
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster,
+) (*valkeyv1alpha1.ValkeyNodeList, bool, ctrl.Result, error) {
+	// Phase 1: headless Service.
+	if err := r.upsertService(ctx, cluster); err != nil {
+		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonServiceError, err)
+	}
+	// Phase 2: PodDisruptionBudget.
+	if err := r.reconcilePodDisruptionBudget(ctx, cluster); err != nil {
+		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonPodDisruptionBudgetError, err)
+	}
+	// Phase 3: ACL / system users.
+	if err := r.reconcileUsersACL(ctx, cluster); err != nil {
+		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonUsersACLError, err)
+	}
+	// Phase 4: ConfigMap + roll hash.
+	configHash, err := r.upsertConfigMap(ctx, cluster)
+	if err != nil {
+		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonConfigMapError, err)
+	}
+	// Phase 5: list nodes.
+	nodes, err := r.listClusterNodes(ctx, cluster)
+	if err != nil {
+		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonValkeyNodeListError, err)
+	}
+	// Phase 6: create/update ValkeyNodes one-at-a-time, replicas-before-primary.
+	// (Wave 2a owns the create + stepping scaffold; the roll/proactive-failover
+	// integration is GO-3.16, Wave 2b.)
+	requeue, err := r.reconcileValkeyNodes(ctx, cluster, nodes, configHash)
+	if err != nil {
+		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonUpdatingNodes, err)
+	}
+	if requeue {
+		setCondition(cluster, CondProgressing, metav1.ConditionTrue, progressingReason(cluster),
+			"creating/updating ValkeyNodes one-at-a-time")
+		setCondition(cluster, CondReady, metav1.ConditionFalse, ReasonUpdatingNodes, "ValkeyNodes not yet converged")
+		if werr := r.writeStatus(ctx, cluster); werr != nil {
+			return nil, true, ctrl.Result{}, werr
+		}
+		return nil, true, ctrl.Result{RequeueAfter: requeueFast}, nil
+	}
+	return nodes, false, ctrl.Result{}, nil
+}
+
+// bootstrapJoin runs the strict bootstrap-join phases 10-12 (MEET ->
+// ADDSLOTSRANGE -> REPLICATE), each returning early with a fast requeue on
+// progress so the next pass observes fresh gossip/slot state. It returns
+// done=true (with a result) when the caller should return early.
+func (r *Reconciler) bootstrapJoin(
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster,
+	state *valkey.ClusterState, nodes *valkeyv1alpha1.ValkeyNodeList,
+) (bool, ctrl.Result, error) {
+	// Phase 10: MEET isolated pending nodes (bidirectional, epoch-bumped).
+	met, err := r.meetIsolatedNodes(ctx, cluster, state)
+	if err != nil {
+		return true, ctrl.Result{}, r.fail(ctx, cluster, ReasonClusterMeet, err)
+	}
+	if met > 0 {
+		return r.progressRequeue(ctx, cluster, "introducing nodes via CLUSTER MEET")
+	}
+	// Phase 11: assign slots to pending primaries (ADDSLOTSRANGE, even split).
+	assigned, err := r.assignSlotsToPendingPrimaries(ctx, cluster, state, nodes)
+	if err != nil {
+		return true, ctrl.Result{}, r.fail(ctx, cluster, ReasonSlotsUnassigned, err)
+	}
+	if assigned > 0 {
+		return r.progressRequeue(ctx, cluster, "assigning slots to primaries")
+	}
+	// Phase 12: replicate pending replicas (CLUSTER REPLICATE).
+	replicated, err := r.replicatePendingReplicas(ctx, cluster, state, nodes)
+	if err != nil {
+		return true, ctrl.Result{}, r.fail(ctx, cluster, ReasonMissingReplicas, err)
+	}
+	if replicated > 0 {
+		return r.progressRequeue(ctx, cluster, "attaching replicas")
+	}
+	return false, ctrl.Result{}, nil
+}
+
+// progressRequeue marks Progressing=True with the message, writes status, and
+// returns done=true + a fast requeue — the common "made progress, observe fresh
+// state next pass" tail of the bootstrap phases.
+func (r *Reconciler) progressRequeue(
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster, msg string,
+) (bool, ctrl.Result, error) {
+	setCondition(cluster, CondProgressing, metav1.ConditionTrue, ReasonAddingNodes, msg)
+	if err := r.writeStatus(ctx, cluster); err != nil {
+		return true, ctrl.Result{}, err
+	}
+	return true, ctrl.Result{RequeueAfter: requeueFast}, nil
+}
+
+// clusterHost is the client connection endpoint: the headless Service DNS.
+func clusterHost(cluster *valkeyv1alpha1.PerconaValkeyCluster) string {
+	return naming.HeadlessServiceName(cluster.Name) + "." + cluster.Namespace + ".svc"
+}
+
+// progressingReason picks Initializing before the cluster has ever formed, else
+// Reconciling (04 §7 initializing-vs-reconciling distinction).
+func progressingReason(cluster *valkeyv1alpha1.PerconaValkeyCluster) string {
+	if conditionTrue(cluster, CondClusterFormed) {
+		return ReasonReconciling
+	}
+	return ReasonInitializing
+}
+
+// crVersionNewerThanOperator reports whether spec.crVersion is newer than the
+// running operator's major.minor (an older operator must not reconcile a CR
+// authored for a newer API, 04 §2.1 step0). An equal/older crVersion is fine.
+// CompareVersion returns sign(operator - crVersion); a negative value means the
+// operator is older than the CR's crVersion.
+func crVersionNewerThanOperator(cluster *valkeyv1alpha1.PerconaValkeyCluster) (bool, string) {
+	if cluster.Spec.CrVersion == "" {
+		return false, ""
+	}
+	if version.CompareVersion(cluster.Spec.CrVersion) < 0 {
+		return true, "spec.crVersion " + cluster.Spec.CrVersion + " is newer than operator " + version.MajorMinor()
+	}
+	return false, ""
+}
+
+// fail records a Warning event, sets Ready=False with the reason, writes status
+// and returns the error so controller-runtime backs off.
+func (r *Reconciler) fail(ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster, reason string, err error) error {
+	r.recorder.Eventf(cluster, nil, eventWarning, reason, reason, "%s", err.Error())
+	setCondition(cluster, CondReady, metav1.ConditionFalse, reason, err.Error())
+	if werr := r.writeStatus(ctx, cluster); werr != nil {
+		logf.FromContext(ctx).Error(werr, "status writeback failed after cluster error")
+	}
+	return err
+}

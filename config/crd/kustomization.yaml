@@ -1,0 +1,10 @@
+# CRD kustomization. controller-gen writes the generated CRDs into
+# config/crd/bases/; the four M1 bases are folded into deploy/crd.yaml and the
+# bundles via this resources list (docs/architecture/02-repo-layout.md §7).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- bases/valkey.percona.com_perconavalkeyclusters.yaml
+- bases/valkey.percona.com_valkeynodes.yaml
+- bases/valkey.percona.com_perconavalkeybackups.yaml
+- bases/valkey.percona.com_perconavalkeyrestores.yaml

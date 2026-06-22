@@ -1,0 +1,1 @@
+# Sample CRs land in M1 (kubectl apply -k). Empty in M0.

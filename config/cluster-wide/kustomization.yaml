@@ -1,0 +1,13 @@
+# Top-level CLUSTER-WIDE overlay (multi-tenant install). Composes the CRD (empty
+# in M0), the cluster-scoped RBAC, and the WATCH_NAMESPACE="" manager into a
+# single install rendered to deploy/cw-bundle.yaml by `make manifests`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: valkey-operator
+
+resources:
+- namespace.yaml
+- ../crd
+- rbac
+- manager

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: valkey-operator
+  labels:
+    app.kubernetes.io/name: percona-valkey-operator
+    app.kubernetes.io/managed-by: kustomize

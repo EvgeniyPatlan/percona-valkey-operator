@@ -1,0 +1,40 @@
+name: scan
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gosec:
+    name: gosec (HIGH-severity blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: gosec
+        uses: securego/gosec@master
+        with:
+          # -severity high makes only HIGH findings fail the job
+          # (docs/architecture/11-testing-qa.md §6.1).
+          args: -severity high ./...
+
+  govulncheck:
+    name: govulncheck (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...

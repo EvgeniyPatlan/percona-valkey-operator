@@ -1,0 +1,23 @@
+# Keep the build context lean: only source + module files are needed.
+bin/
+testbin/
+build/_output/
+dist/
+.git/
+.github/
+docs/
+e2e-tests/
+config/
+deploy/
+bundle/
+*.md
+cover.out
+*.test
+.idea/
+.vscode/
+Dockerfile
+Dockerfile.sidecar
+Jenkinsfile
+.golangci.yml
+.custom-gcl.yml
+.pre-commit-config.yaml
