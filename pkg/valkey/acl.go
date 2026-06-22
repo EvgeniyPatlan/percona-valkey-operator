@@ -43,23 +43,39 @@ type SystemUser struct {
 }
 
 // operatorRules is the canonical least-privilege _operator grant string
-// (everything after the hashed-password slot). The first segment is byte-
-// identical to the canonical 07 §4.3 / 04 §3 string; M5 EXTENDS it (07 §4.3,
-// FROZEN M5 contract) by APPENDING — never inserting — the backup grants:
+// (everything after the hashed-password slot), byte-identical to the canonical
+// 07 §4.3 / 04 §3 specification.
 //
-//   - +bgsave: lets the operator trigger a server-side RDB snapshot.
-//   - +sync +psync +replconf: the replication grants the M4 backup Job needs to
-//     pull each shard's RDB over the replication protocol while authenticated as
-//     _operator. The Job uses the legacy SYNC (+sync); +psync/+replconf are the
-//     canonical Valkey replica-user grants (valkey-doc topics/acl.md) and are
-//     added for robustness so a PSYNC-based path also works.
-//
-// The tokens are APPENDED after +ping so the original canonical substring stays
-// contiguous (M3/M4 golden ContainSubstring assertions keep passing). Any change
-// is a CRITICAL trust-boundary change (07 §10) requiring security-reviewer.
+// M6 SECURITY REFACTOR (07 §10 trust-boundary narrowing): the replication +
+// snapshot grants (+bgsave +sync +psync +replconf) that M5 had APPENDED here so
+// the backup Job could SYNC-as-replica while authenticating as _operator have
+// been MOVED onto _backup (see backupRules). The backup Job now authenticates as
+// _backup, which performs the BGSAVE+SYNC itself, so _operator no longer needs
+// any replication/snapshot grant and is narrowed back to the canonical
+// orchestration-only floor. This resolves the M5 trust-boundary flag: a
+// compromised _operator credential can no longer pull every shard's full dataset
+// over the replication protocol. Any change to this string is a CRITICAL
+// trust-boundary change (07 §10) requiring security-reviewer.
 const operatorRules = "resetchannels resetkeys -@all +cluster +config|get +config|set +info " +
-	"+client|setname +client|setinfo +replicaof +wait +ping " +
-	"+bgsave +sync +psync +replconf"
+	"+client|setname +client|setinfo +replicaof +wait +ping"
+
+// backupRules is the canonical least-privilege _backup grant string. _backup is
+// the snapshot+replication user: it triggers a server-side RDB snapshot and
+// pulls each shard's RDB over the replication protocol.
+//
+//   - +bgsave +lastsave +save: server-side snapshot control (07 §4.3 canonical).
+//   - +info +wait +ping: connection/health + replica-ack await (07 §4.3 canonical).
+//   - +sync +psync +replconf (M6, APPENDED): the replication grants the backup Job
+//     needs to attach as a replica and stream each shard's RDB. The Job uses the
+//     legacy SYNC (+sync); +psync/+replconf are the canonical Valkey replica-user
+//     grants (valkey-doc topics/acl.md) added so a PSYNC-based path also works.
+//
+// The replication tokens are APPENDED after the canonical +ping so the original
+// 07 §4.3 substring stays contiguous. Like operatorRules, any change here is a
+// CRITICAL trust-boundary change (07 §10) requiring security-reviewer: _backup
+// is now the only system user that can read the full keyspace via replication.
+const backupRules = "resetchannels resetkeys -@all +bgsave +lastsave +save +info +wait +ping " +
+	"+sync +psync +replconf"
 
 // SystemUsers returns the canonical system-user definitions in fixed order.
 // _exporter is included only when exporterEnabled (07 §4.3: skipped when the
@@ -82,7 +98,7 @@ func SystemUsers(exporterEnabled bool) []SystemUser {
 	}
 	users = append(users, SystemUser{
 		Name:  SystemUserBackup,
-		Rules: "resetchannels resetkeys -@all +bgsave +lastsave +save +info +wait +ping",
+		Rules: backupRules,
 	})
 	return users
 }

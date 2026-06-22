@@ -56,7 +56,7 @@ func TestJobEnvS3Backup(t *testing.T) {
 		Consistency:   "strict",
 		EngineVersion: "9.0.0",
 		SeedNode:      "valkey-prod:6379",
-		AuthUser:      "_operator",
+		AuthUser:      "_backup",
 		TLSEnabled:    true,
 		TLSCAFile:     "/etc/valkey/tls/ca.crt",
 	})
@@ -80,7 +80,7 @@ func TestJobEnvS3Backup(t *testing.T) {
 		EnvConsistency:   "strict",
 		EnvEngineVersion: "9.0.0",
 		EnvSeedNode:      "valkey-prod:6379",
-		EnvAuthUser:      "_operator",
+		EnvAuthUser:      "_backup",
 		EnvTLSEnabled:    "true",
 		EnvTLSCAFile:     "/etc/valkey/tls/ca.crt",
 	}

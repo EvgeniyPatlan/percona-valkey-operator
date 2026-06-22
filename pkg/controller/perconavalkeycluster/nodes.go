@@ -189,6 +189,18 @@ func (r *Reconciler) rollNextNode(
 		defer state.CloseClients()
 	}
 
+	// Smart-update gate + engine-downgrade policy (M6 GO-6.8/6.12 seam): evaluate
+	// the failover-aware engine-upgrade gate (Ready + slots=16384 + replicas synced
+	// + no backup running) and refuse an unsafe engine downgrade BEFORE rolling any
+	// node. While gated the roll is held (requeue, no data-pod churn). The stub
+	// permits the roll so the existing M3 ordering/failover path runs unchanged.
+	if allowed, reason := r.reconcileSmartUpdate(ctx, cluster, state); !allowed {
+		setCondition(cluster, CondProgressing, metav1.ConditionTrue, ReasonReconciling,
+			"engine roll deferred: "+reason)
+		log.V(1).Info("smart-update gate holding engine roll", "reason", reason)
+		return true, r.writeStatus(ctx, cluster)
+	}
+
 	target := nextRollCandidate(cluster, nodes, state, configHash)
 	if target == nil {
 		return true, nil // nothing rollable yet (e.g. live role unknown); requeue.

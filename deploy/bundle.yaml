@@ -4682,6 +4682,15 @@ spec:
                   host is the client connection endpoint (headless Service DNS). In cluster
                   mode this is a seed/bootstrap endpoint.
                 type: string
+              lastObservedCrVersion:
+                description: |-
+                  lastObservedCrVersion mirrors the spec.crVersion that was last accepted by a
+                  successful reconcile. It is the runtime anchor for the monotonic
+                  crVersion-downgrade rejection (09 §7): on a reconcile that observes a
+                  spec.crVersion lower than this value, the operator refuses the decrease,
+                  keeps the prior contract in force, and reports CrVersionDowngradeRejected.
+                  It is major.minor only (patch never churns the contract).
+                type: string
               message:
                 description: message is human-readable detail.
                 type: string

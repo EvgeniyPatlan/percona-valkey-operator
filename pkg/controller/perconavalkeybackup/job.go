@@ -170,11 +170,15 @@ func (r *Reconciler) desiredBackupJob(
 // backupJobEnv builds the VALKEY_BACKUP_* env the sidecar reads in backup mode
 // (06 §4.1, §8.7): the storage type + coordinates, the cluster/backup names that
 // derive object keys, the manifest-populating fields, and the engine-connection
-// inputs (seed node, _operator user, TLS). The _operator password is injected via
-// a SecretKeyRef into VALKEY_BACKUP_AUTH_PASSWORD from the cluster's
-// system-passwords Secret so the value never transits the operator process or the
-// Job spec (06 §8.2 / 8.3). The storage-credential VALUES arrive separately via
-// the credentials Secret mounted as EnvFrom (set by the caller).
+// inputs (seed node, _backup user, TLS). The _backup password is injected via a
+// SecretKeyRef into VALKEY_BACKUP_AUTH_PASSWORD from the cluster's system-passwords
+// Secret so the value never transits the operator process or the Job spec
+// (06 §8.2 / 8.3). The storage-credential VALUES arrive separately via the
+// credentials Secret mounted as EnvFrom (set by the caller).
+//
+// M6 SECURITY REFACTOR (07 §10): the Job authenticates as _backup, not _operator.
+// _backup carries the snapshot + SYNC-as-replica replication grants (see
+// pkg/valkey/acl.go backupRules); _operator was narrowed back to orchestration-only.
 func backupJobEnv(
 	bk *valkeyv1alpha1.PerconaValkeyBackup, cluster *valkeyv1alpha1.PerconaValkeyCluster, rs *resolvedStorage,
 ) []corev1.EnvVar {
@@ -194,11 +198,11 @@ func backupJobEnv(
 		CRVersion:   cluster.Spec.CrVersion,
 		Consistency: consistency,
 		SeedNode:    backupSeedNode(cluster.Name),
-		AuthUser:    naming.SystemUserOperator,
+		AuthUser:    naming.SystemUserBackup,
 		TLSEnabled:  cluster.Spec.TLS != nil,
 		TLSCAFile:   tlsCAFilePath(cluster),
 	})
-	// The _operator password value comes from the cluster's system-passwords Secret
+	// The _backup password value comes from the cluster's system-passwords Secret
 	// keyed by the username (see acl.go) — referenced, never read by the operator.
 	env = append(env, corev1.EnvVar{
 		Name: backup.EnvAuthPassword,
@@ -207,7 +211,7 @@ func backupJobEnv(
 				LocalObjectReference: corev1.LocalObjectReference{
 					Name: naming.SystemPasswordsSecretName(cluster.Name),
 				},
-				Key:      naming.SystemUserOperator,
+				Key:      naming.SystemUserBackup,
 				Optional: ptrBool(true),
 			},
 		},

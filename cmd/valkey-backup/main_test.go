@@ -72,8 +72,8 @@ func TestConnSecurityFromEnvDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connSecurityFromEnv: %v", err)
 	}
-	if auth.username != naming.SystemUserOperator {
-		t.Fatalf("auth.username = %q, want %q", auth.username, naming.SystemUserOperator)
+	if auth.username != naming.SystemUserBackup {
+		t.Fatalf("auth.username = %q, want %q", auth.username, naming.SystemUserBackup)
 	}
 	if auth.password != "pw" {
 		t.Fatalf("auth.password not carried")

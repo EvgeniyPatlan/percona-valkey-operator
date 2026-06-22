@@ -58,8 +58,9 @@ const syncReadTimeout = 10 * time.Minute
 
 // syncRDBSource is the production RDBSource: it dials the shard primary directly
 // (not via the high-level valkey-go client, which would try to parse the bulk
-// RDB as a command reply), AUTHs as _operator, optionally SELECTs no DB, and
-// issues SYNC, then exposes the inline RDB bulk payload as an io.ReadCloser.
+// RDB as a command reply), AUTHs as _backup (M6 security refactor, 07 §10 — the
+// SYNC-as-replica grants live on _backup, not _operator), optionally SELECTs no
+// DB, and issues SYNC, then exposes the inline RDB bulk payload as an io.ReadCloser.
 type syncRDBSource struct {
 	addr      string
 	auth      authCreds

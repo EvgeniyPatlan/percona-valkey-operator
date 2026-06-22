@@ -76,8 +76,9 @@ const (
 	envFSRoot      = backup.EnvFSRoot
 	envSeedNode    = backup.EnvSeedNode
 	envAuthUser    = backup.EnvAuthUser
-	// envAuthPassword is the env-var NAME the Job reads the _operator password
-	// from; the value is a mounted-Secret reference, never embedded in source.
+	// envAuthPassword is the env-var NAME the Job reads the _backup password
+	// from (M6 security refactor, 07 §10); the value is a mounted-Secret
+	// reference, never embedded in source.
 	envAuthPassword  = backup.EnvAuthPassword
 	envTLSEnabled    = backup.EnvTLSEnabled
 	envTLSCAFile     = backup.EnvTLSCAFile
@@ -253,11 +254,13 @@ func runCleanupFromEnv(ctx context.Context) error {
 }
 
 // connSecurityFromEnv resolves the AUTH credentials and optional TLS config the
-// Job uses to talk to Valkey. The _operator credentials and CA come from the
-// mounted cluster Secrets via env/file (06 §8.3).
+// Job uses to talk to Valkey. The _backup credentials and CA come from the mounted
+// cluster Secrets via env/file (06 §8.3). The default user is _backup (M6 security
+// refactor, 07 §10): _backup carries the SYNC-as-replica replication grants that
+// were moved off _operator; the operator injects VALKEY_BACKUP_AUTH_USER=_backup.
 func connSecurityFromEnv() (authCreds, *tls.Config, error) {
 	auth := authCreds{
-		username: envOrDefault(envAuthUser, naming.SystemUserOperator),
+		username: envOrDefault(envAuthUser, naming.SystemUserBackup),
 		password: os.Getenv(envAuthPassword),
 	}
 	if strings.ToLower(os.Getenv(envTLSEnabled)) != "true" {

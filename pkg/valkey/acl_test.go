@@ -23,26 +23,41 @@ import (
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
 )
 
-// TestOperatorRulesUnblocksBackup locks the FROZEN M5 contract: the _operator
-// ACL must carry +bgsave AND the SYNC-as-replica replication grants so the M4
-// backup Job (which AUTHs as _operator and issues legacy SYNC) is unblocked.
-// These tokens are APPENDED after +ping so the original canonical substring
-// stays contiguous (M3/M4 ContainSubstring golden assertions keep passing).
-func TestOperatorRulesUnblocksBackup(t *testing.T) {
+// TestBackupRulesCarrySyncGrants locks the M6 SECURITY REFACTOR (07 §10): the
+// SYNC-as-replica replication grants live on _backup (the snapshot+replication
+// user the backup Job AUTHs as), and _operator carries NEITHER the replication
+// grants NOR +bgsave — it is narrowed back to the canonical orchestration-only
+// floor. The replication tokens are APPENDED after _backup's canonical +ping so
+// its original 07 §4.3 substring stays contiguous.
+func TestBackupRulesCarrySyncGrants(t *testing.T) {
 	t.Parallel()
-	got := SystemUsers(true)[0].Rules
-	// Original canonical prefix preserved contiguous (M3/M4 golden compatibility).
-	if !strings.HasPrefix(got, wantOperatorBaseRules+" ") {
-		t.Fatalf("operator rules lost the canonical prefix:\n got: %q\nwant prefix: %q", got, wantOperatorBaseRules)
+	users := SystemUsers(true)
+	operator := users[0].Rules
+	backup := users[2].Rules
+
+	// _operator is narrowed: it must be EXACTLY the canonical orchestration floor,
+	// with no replication or snapshot grant left behind.
+	if operator != wantOperatorRules {
+		t.Fatalf("operator rules drifted (should be orchestration-only):\n got: %q\nwant: %q", operator, wantOperatorRules)
 	}
-	// The backup/replication grants are present and APPENDED (not inserted).
 	for _, tok := range []string{"+bgsave", "+sync", "+psync", "+replconf"} {
-		if !strings.Contains(got, " "+tok) {
-			t.Fatalf("operator rules missing backup grant %q (M4 backup would stay blocked):\n%s", tok, got)
+		if strings.Contains(operator, " "+tok) {
+			t.Fatalf("operator STILL carries snapshot/replication grant %q (trust-boundary regression, 07 §10):\n%s", tok, operator)
 		}
 	}
-	if got != wantOperatorRules {
-		t.Fatalf("operator rules drifted:\n got: %q\nwant: %q", got, wantOperatorRules)
+
+	// _backup is the snapshot+replication user: canonical prefix preserved
+	// contiguous, with the SYNC-as-replica grants APPENDED.
+	if !strings.HasPrefix(backup, wantBackupBaseRules+" ") {
+		t.Fatalf("backup rules lost the canonical prefix:\n got: %q\nwant prefix: %q", backup, wantBackupBaseRules)
+	}
+	for _, tok := range []string{"+bgsave", "+sync", "+psync", "+replconf"} {
+		if !strings.Contains(backup, " "+tok) {
+			t.Fatalf("backup rules missing replication grant %q (SYNC-as-replica backup would stay blocked):\n%s", tok, backup)
+		}
+	}
+	if backup != wantBackupRules {
+		t.Fatalf("backup rules drifted:\n got: %q\nwant: %q", backup, wantBackupRules)
 	}
 }
 

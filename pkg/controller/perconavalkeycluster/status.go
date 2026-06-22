@@ -71,9 +71,19 @@ const (
 	ReasonValkeyNodeListError      = "ValkeyNodeListError"
 	ReasonSystemUsersACLError      = "SystemUsersAclError"
 	ReasonUnsupportedCRVersion     = "UnsupportedCRVersion"
-	ReasonClusterMeet              = "ClusterMeet"
-	ReasonScrapeError              = "ScrapeError"
-	ReasonPaused                   = "Paused"
+	// ReasonCrVersionTooOld halts the reconcile when spec.crVersion is below the
+	// operator's accepted floor (more than one released minor behind), per the
+	// 09 §8 compatibility matrix — the user must step crVersion up one minor at a
+	// time rather than jump (09 §7 unsupported-jump handling).
+	ReasonCrVersionTooOld = "CrVersionTooOld"
+	// ReasonCrVersionDowngradeRejected halts the reconcile when spec.crVersion is
+	// lowered below status.lastObservedCrVersion. crVersion is monotonic within a
+	// cluster's life (09 §7): the prior contract is kept in force and the decrease
+	// refused at runtime (crVersion is deliberately not hard-immutable, 03 §4.3).
+	ReasonCrVersionDowngradeRejected = "CrVersionDowngradeRejected"
+	ReasonClusterMeet                = "ClusterMeet"
+	ReasonScrapeError                = "ScrapeError"
+	ReasonPaused                     = "Paused"
 	// Wave 2b reasons (scale / roll / recovery, 04 §7).
 	ReasonRebalanceFailed   = "RebalanceFailed"
 	ReasonDrainFailed       = "DrainFailed"

@@ -67,6 +67,11 @@ func (r *Reconciler) verifyAndMarkReady(
 	setCondition(cluster, CondProgressing, metav1.ConditionFalse, ReasonClusterHealthy, "converged")
 	setCondition(cluster, CondDegraded, metav1.ConditionFalse, ReasonClusterHealthy, "healthy")
 	cluster.Status.ObservedGeneration = cluster.Generation
+	// Mirror the accepted contract at the successful reconcile tail (GO-6.3): this
+	// is the runtime anchor the next pass compares against to reject a crVersion
+	// downgrade. Written only once the cluster has converged on this crVersion so a
+	// rejected/in-flight contract never advances the monotonic floor (09 §7).
+	cluster.Status.LastObservedCrVersion = cluster.Spec.CrVersion
 	if err := r.writeStatus(ctx, cluster); err != nil {
 		return false, err
 	}

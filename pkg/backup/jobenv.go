@@ -66,7 +66,8 @@ const (
 	// EnvSeedNode is a reachable Valkey node the backup Job scrapes CLUSTER NODES
 	// from to resolve each shard's live primary (backup mode only).
 	EnvSeedNode = "VALKEY_BACKUP_SEED_NODE"
-	// EnvAuthUser is the ACL user the Job authenticates as (default _operator).
+	// EnvAuthUser is the ACL user the Job authenticates as (default _backup; M6
+	// security refactor, 07 §10 — the SYNC-as-replica grants live on _backup).
 	EnvAuthUser = "VALKEY_BACKUP_AUTH_USER"
 	// EnvAuthPassword is the env-var NAME the Job reads the auth password from; its
 	// VALUE is supplied by a mounted-Secret env entry, never embedded here.

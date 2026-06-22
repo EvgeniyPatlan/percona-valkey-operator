@@ -27,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -285,6 +286,43 @@ var _ = ginkgo.Describe("PerconaValkeyCluster controller bootstrap", func() {
 		nodes := &valkeyv1alpha1.ValkeyNodeList{}
 		gomega.Expect(k8sClient.List(testCtx, nodes, client.InNamespace(ns))).To(gomega.Succeed())
 		gomega.Expect(nodes.Items).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("rejects a runtime crVersion downgrade with Degraded/CrVersionDowngradeRejected and keeps the prior contract (GO-6.3)", func() {
+		// Form the cluster at the operator's stamped crVersion; reaching Ready writes
+		// status.lastObservedCrVersion, the monotonicity anchor.
+		cluster := makeCluster("crdown", ns, 3)
+		gomega.Expect(k8sClient.Create(testCtx, cluster)).To(gomega.Succeed())
+		key := client.ObjectKeyFromObject(cluster)
+		reconcileUntilReady(r, key, 40)
+
+		formed := &valkeyv1alpha1.PerconaValkeyCluster{}
+		gomega.Expect(k8sClient.Get(testCtx, key, formed)).To(gomega.Succeed())
+		observed := formed.Status.LastObservedCrVersion
+		gomega.Expect(observed).NotTo(gomega.BeEmpty(), "a Ready cluster must mirror its accepted crVersion")
+
+		rec := events.NewFakeRecorder(400)
+		r.RecorderForTest(rec)
+
+		// Attempt to lower crVersion below the last-observed value: 0.0 < 0.1.
+		gomega.Expect(k8sClient.Get(testCtx, key, formed)).To(gomega.Succeed())
+		formed.Spec.CrVersion = "0.0"
+		gomega.Expect(k8sClient.Update(testCtx, formed)).To(gomega.Succeed())
+
+		_, err := r.Reconcile(testCtx, ctrl.Request{NamespacedName: key})
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+		// The decrease is refused: Degraded/CrVersionDowngradeRejected, prior contract held.
+		after := &valkeyv1alpha1.PerconaValkeyCluster{}
+		gomega.Expect(k8sClient.Get(testCtx, key, after)).To(gomega.Succeed())
+		gomega.Expect(after.Status.State).To(gomega.Equal(valkeyv1alpha1.StateDegraded))
+		gomega.Expect(conditionReason(after, perconavalkeycluster.CondDegraded)).
+			To(gomega.Equal(perconavalkeycluster.ReasonCrVersionDowngradeRejected))
+		// The last-observed anchor is unchanged (the downgrade never advanced it).
+		gomega.Expect(after.Status.LastObservedCrVersion).To(gomega.Equal(observed))
+		// A Warning event named the refusal.
+		gomega.Expect(drainRecorder(rec)).To(gomega.ContainElement(
+			gomega.ContainSubstring(perconavalkeycluster.ReasonCrVersionDowngradeRejected)))
 	})
 })
 

@@ -30,6 +30,8 @@ package perconavalkeycluster
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -107,9 +109,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := cluster.CheckNSetDefaults(ctx, r.platform); err != nil {
 		return ctrl.Result{}, r.fail(ctx, cluster, ReasonConfigMapError, err)
 	}
-	if newer, msg := crVersionNewerThanOperator(cluster); newer {
-		setCondition(cluster, CondReady, metav1.ConditionFalse, ReasonUnsupportedCRVersion, msg)
-		return ctrl.Result{}, r.writeStatus(ctx, cluster)
+	// crVersion gate (09 §2, §7, §8): validate spec.crVersion against the operator
+	// version exactly once, here in phase 0, before any image/topology reconcile.
+	// halt=true means the gate set a terminal condition (status already written by
+	// the gate) and reconcile must stop without proceeding to the pipeline.
+	if halt, err := r.reconcileVersionGate(ctx, cluster); halt || err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if !cluster.DeletionTimestamp.IsZero() {
@@ -139,6 +144,15 @@ func (r *Reconciler) reconcileCluster(
 ) (ctrl.Result, error) {
 	log.V(1).Info("reconciling cluster", "shards", cluster.Spec.Shards, "replicas", cluster.Spec.Replicas)
 	cluster.Status.Host = clusterHost(cluster)
+
+	// Version check (09 §3): resolve spec.upgradeOptions and let the version service
+	// mutate spec.image (only-if-differs) BEFORE the node-stepping/smart-update step,
+	// so a resolved engine pin is in place by the time phase 4 renders the pod
+	// template and phase 6 rolls. Disabled (default) is a no-op. SEAM filled by the
+	// version-check leg (GO-6.4/6.5/6.6/6.7); no-op stub until then.
+	if err := r.reconcileVersionCheck(ctx, cluster); err != nil {
+		return ctrl.Result{}, r.fail(ctx, cluster, ReasonVersionCheckFailed, err)
+	}
 
 	// Phases 1-6: infrastructure + one-at-a-time ValkeyNode stepping.
 	nodes, done, res, err := r.reconcileInfra(ctx, cluster)
@@ -402,11 +416,85 @@ func progressingReason(cluster *valkeyv1alpha1.PerconaValkeyCluster) string {
 	return ReasonInitializing
 }
 
+// reconcileVersionGate is the SINGLE phase-0 crVersion gate (09 §2, §7, §8). It
+// validates spec.crVersion against the running operator's major.minor and decides
+// whether the reconcile may proceed. It is wired ONCE in Reconcile (the contended
+// dispatch the M6 FOUNDATION owns) so the version-acceptance policy has exactly
+// one entry point.
+//
+// The gate applies four checks in order, all routed through this one entry point
+// so the version-acceptance policy stays single-sourced:
+//
+//  1. NEWER than the operator's major.minor — an older operator must not reconcile
+//     a CR authored for a newer API (04 §2.1 step0): Ready=False/UnsupportedCRVersion.
+//  2. Runtime crVersion DOWNGRADE (GO-6.3) — a decrease vs status.lastObservedCrVersion
+//     is refused; the prior contract is kept in force (spec.crVersion reverted in
+//     memory) and Degraded/CrVersionDowngradeRejected is set (09 §7). crVersion is
+//     deliberately not hard-immutable (03 §4.3), so monotonicity is enforced here.
+//  3. Below-FLOOR crVersion (GO-6.2) — accepted = own minor + the immediately-
+//     preceding released minor, computed via version.AcceptedCrVersions (09 §8). A
+//     value more than one minor behind is halted with Degraded/CrVersionTooOld.
+//  4. Otherwise the contract is accepted and the pipeline proceeds.
+//
+// An empty crVersion never reaches here (CheckNSetDefaults stamps it first). The
+// successful tail (verifyAndMarkReady) mirrors the accepted crVersion onto
+// status.lastObservedCrVersion, the anchor check 2 compares against next pass.
+// version.CompareMajorMinor / CompareVersion are the comparators used here.
+func (r *Reconciler) reconcileVersionGate(
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster,
+) (halt bool, err error) {
+	// Newer-than-operator: an older operator must not reconcile a CR authored for a
+	// newer API (04 §2.1 step0). Ready=False/UnsupportedCRVersion, halt.
+	if newer, msg := crVersionNewerThanOperator(cluster); newer {
+		setCondition(cluster, CondReady, metav1.ConditionFalse, ReasonUnsupportedCRVersion, msg)
+		return true, r.writeStatus(ctx, cluster)
+	}
+
+	// GO-6.3 runtime monotonicity: reject a crVersion DECREASE vs the last accepted
+	// value (mirrored on status). crVersion is deliberately not hard-immutable
+	// (03 §4.3) so the forward opt-in bump is allowed; a decrease is refused HERE at
+	// runtime — the prior contract is kept in force (spec.crVersion reverted in
+	// memory so the rest of the pass reconciles the OLD contract), a Warning is
+	// emitted, and Degraded/CrVersionDowngradeRejected is set (09 §7).
+	if last := cluster.Status.LastObservedCrVersion; last != "" &&
+		version.CompareMajorMinor(cluster.Spec.CrVersion, last) < 0 {
+		rejected := cluster.Spec.CrVersion
+		cluster.Spec.CrVersion = last // keep the prior contract in force
+		msg := "refusing crVersion downgrade " + rejected + " -> " + last + " (crVersion is monotonic)"
+		r.recorder.Eventf(cluster, nil, eventWarning, ReasonCrVersionDowngradeRejected,
+			ReasonCrVersionDowngradeRejected, "%s", msg)
+		setCondition(cluster, CondDegraded, metav1.ConditionTrue, ReasonCrVersionDowngradeRejected, msg)
+		setCondition(cluster, CondReady, metav1.ConditionFalse, ReasonCrVersionDowngradeRejected, msg)
+		return true, r.writeStatus(ctx, cluster)
+	}
+
+	// GO-6.2 floor: accept only the operator's own minor + the immediately-preceding
+	// released minor (09 §8, computed not hardcoded). A crVersion below that floor
+	// (more than one minor behind) is halted with Degraded/CrVersionTooOld so the
+	// user steps up one minor at a time rather than jumping (09 §7). Newer values
+	// were already handled above, so a non-accepted value here is necessarily too old.
+	accepted := version.AcceptedCrVersions(version.MajorMinor())
+	if !slices.Contains(accepted, cluster.Spec.CrVersion) {
+		msg := "spec.crVersion " + cluster.Spec.CrVersion + " is more than one minor behind operator " +
+			version.MajorMinor() + " (accepted: " + strings.Join(accepted, ", ") +
+			"); step crVersion up one minor at a time"
+		r.recorder.Eventf(cluster, nil, eventWarning, ReasonCrVersionTooOld,
+			ReasonCrVersionTooOld, "%s", msg)
+		setCondition(cluster, CondDegraded, metav1.ConditionTrue, ReasonCrVersionTooOld, msg)
+		setCondition(cluster, CondReady, metav1.ConditionFalse, ReasonCrVersionTooOld, msg)
+		return true, r.writeStatus(ctx, cluster)
+	}
+
+	return false, nil
+}
+
 // crVersionNewerThanOperator reports whether spec.crVersion is newer than the
 // running operator's major.minor (an older operator must not reconcile a CR
-// authored for a newer API, 04 §2.1 step0). An equal/older crVersion is fine.
-// CompareVersion returns sign(operator - crVersion); a negative value means the
-// operator is older than the CR's crVersion.
+// authored for a newer API, 04 §2.1 step0). An empty/equal/older crVersion is
+// fine. version.CompareVersion returns sign(operator - crVersion); a negative
+// value means the operator is older than the CR's crVersion. Kept as a pure
+// predicate (no receiver) so reconcileVersionGate and unit tests share one source
+// of truth for the newer-than-operator rule.
 func crVersionNewerThanOperator(cluster *valkeyv1alpha1.PerconaValkeyCluster) (bool, string) {
 	if cluster.Spec.CrVersion == "" {
 		return false, ""

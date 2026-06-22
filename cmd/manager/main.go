@@ -6,6 +6,7 @@ import (
 
 	"go.uber.org/zap/zapcore"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	crzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
@@ -41,16 +42,34 @@ func main() {
 		opts.watchNamespace = watchNamespaceFromEnv()
 	}
 
-	mgr, err := newManager(ctrl.GetConfigOrDie(), opts)
+	cfg := ctrl.GetConfigOrDie()
+	mgr, err := newManager(cfg, opts)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager (no controllers registered — M0 bootstrap)",
+	signalCtx := ctrl.SetupSignalHandler()
+
+	// Webhook serving-cert startup gate (M5 GO-5.14 scaffold; guarded no-op unless
+	// WEBHOOK_CERT_SECRET is set — deferred v1-conversion plan, see manager.go).
+	// Uses a direct (non-cached) client so the Secret poll works before mgr.Start
+	// has synced the cache.
+	directClient, derr := client.New(cfg, client.Options{Scheme: scheme})
+	if derr != nil {
+		setupLog.Error(derr, "unable to build webhook-cert gate client")
+		os.Exit(1)
+	}
+	if gerr := waitForWebhookCertGate(signalCtx, directClient); gerr != nil {
+		setupLog.Error(gerr, "webhook serving-cert gate failed")
+		os.Exit(1)
+	}
+
+	setupLog.Info("starting manager",
+		"version", operatorVersion(),
 		"leaderElection", opts.enableLeaderElection,
 		"watchNamespace", opts.watchNamespace)
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(signalCtx); err != nil {
 		setupLog.Error(err, "manager exited non-zero")
 		os.Exit(1)
 	}

@@ -222,8 +222,9 @@ func TestBuildUserDefinedACLLinesSkipsDisabledAndReserved(t *testing.T) {
 
 // TestReconcileUsersACLCreatesSecretAndRenders is the integration test: it
 // renders the internal-<cluster>-acl Secret (type valkey.io/acl) containing the
-// system users (incl. the M5 _operator backup grants) plus a full user-defined
-// ACL line with hashed passwords sourced from the user's Secret.
+// system users (with the M6 _backup replication grants — see the security
+// refactor in pkg/valkey/acl.go) plus a full user-defined ACL line with hashed
+// passwords sourced from the user's Secret.
 func TestReconcileUsersACLCreatesSecretAndRenders(t *testing.T) {
 	t.Parallel()
 	cluster := aclTestCluster("c1")
@@ -252,15 +253,30 @@ func TestReconcileUsersACLCreatesSecretAndRenders(t *testing.T) {
 	}
 	acl := string(got.Data[valkey.ACLFileKey])
 
-	// System users present, with the M5 _operator backup grants (M4 unblock).
+	// System users present (M6 security refactor, 07 §10): the replication grants
+	// live on _backup; _operator is narrowed to orchestration-only.
 	if !strings.Contains(acl, "user _operator on #") {
 		t.Fatalf("missing _operator line:\n%s", acl)
 	}
-	if !strings.Contains(acl, "+bgsave +sync +psync +replconf") {
-		t.Fatalf("_operator missing M5 backup grants (M4 backup blocked):\n%s", acl)
-	}
 	if !strings.Contains(acl, "user _exporter on #") || !strings.Contains(acl, "user _backup on #") {
 		t.Fatalf("missing system users:\n%s", acl)
+	}
+	// _backup carries the SYNC-as-replica + snapshot grants (the backup Job AUTHs
+	// as _backup and does the BGSAVE+SYNC itself).
+	if !strings.Contains(acl, "+bgsave +lastsave +save +info +wait +ping +sync +psync +replconf") {
+		t.Fatalf("_backup missing M6 replication grants (SYNC-as-replica backup blocked):\n%s", acl)
+	}
+	// _operator must NOT carry any replication/snapshot grant (trust-boundary
+	// narrowing, 07 §10): isolate its line and assert the tokens are absent.
+	for _, line := range strings.Split(acl, "\n") {
+		if !strings.HasPrefix(line, "user _operator on #") {
+			continue
+		}
+		for _, tok := range []string{"+bgsave", "+sync", "+psync", "+replconf"} {
+			if strings.Contains(line, " "+tok) {
+				t.Fatalf("_operator STILL carries %q (trust-boundary regression, 07 §10):\n%s", tok, line)
+			}
+		}
 	}
 
 	// User-defined line rendered with the full grammar and the hashed password.

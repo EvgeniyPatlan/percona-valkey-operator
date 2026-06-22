@@ -259,6 +259,14 @@ type PerconaValkeyClusterStatus struct {
 	// observedGeneration is the last metadata.generation reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// lastObservedCrVersion mirrors the spec.crVersion that was last accepted by a
+	// successful reconcile. It is the runtime anchor for the monotonic
+	// crVersion-downgrade rejection (09 §7): on a reconcile that observes a
+	// spec.crVersion lower than this value, the operator refuses the decrease,
+	// keeps the prior contract in force, and reports CrVersionDowngradeRejected.
+	// It is major.minor only (patch never churns the contract).
+	// +optional
+	LastObservedCrVersion string `json:"lastObservedCrVersion,omitempty"`
 	// conditions are standard Kubernetes conditions (keyed by type).
 	// +listType=map
 	// +listMapKey=type
