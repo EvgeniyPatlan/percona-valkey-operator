@@ -1,0 +1,169 @@
+# valkey-db chart values — drive a PerconaValkeyCluster CR. Keys map 1:1 to the CR
+# spec (pkg/apis/valkey/v1alpha1/perconavalkeycluster_types.go) so the templates are a
+# thin render of .Values into spec.*. Image pins (server/backup/exporter) are a hand-edited
+# copy of e2e-tests/release_versions GA tags (no auto-sync; arch 10 §3.2, §6.1 trap 4).
+#
+# Config-surface alignment: where the user's existing percona-valkey chart exposes a knob
+# that maps to a CR field (mode, auth + ACL users, tls + cert-manager, persistence,
+# metrics/exporter, expose/externalAccess, networkPolicy, disableCommands, scheduling,
+# resources), this chart mirrors that surface but renders it INTO the CR rather than into raw
+# workloads. The operator owns the workload; this chart only authors the CR + Secrets.
+#
+# NOTE on `mode`: the CR enum is cluster | replication | standalone. The reference chart's
+# "sentinel" mode has no operator analogue (the operator performs replication failover
+# without Sentinel) and maps to `replication` here.
+
+# --- cluster identity (CR metadata.name = release name; namespace = release namespace) ---
+nameOverride: ""
+fullnameOverride: ""
+
+# crVersion is auto-stamped by the operator from version.txt major.minor when empty; leave
+# empty unless pinning intentionally. (arch 09; do NOT hand-set to a full semver)
+crVersion: ""
+
+# --- spec.mode / topology ---
+# "cluster" (sharded) | "replication" (1 primary + N replicas, operator failover) |
+# "standalone" (single node). Immutable once created.
+mode: cluster
+shards: 3
+replicas: 2
+# "StatefulSet" (durable) | "Deployment" (cache, no PVCs). Immutable once created.
+workloadType: StatefulSet
+pause: false
+
+# --- spec.image (server) + pull secrets ---
+image: "percona/percona-valkey:8.0.2"
+imagePullSecrets: []
+#  - name: percona-registry
+
+# --- spec.resources ---
+resources:
+  requests: { cpu: "1", memory: 2Gi }
+  limits:   { cpu: "2", memory: 2Gi }
+
+# --- spec.persistence (set enabled=false / omit for cache mode) ---
+persistence:
+  enabled: true
+  size: 20Gi
+  storageClassName: ""        # immutable once set; "" => cluster default StorageClass
+  reclaimPolicy: Retain       # Retain | Delete
+
+# --- spec.config (additional valkey.conf; operator base config wins on conflict) ---
+config: {}
+#  maxmemory: "3gb"
+#  maxmemory-policy: "allkeys-lru"
+#  appendonly: "yes"
+
+# --- spec.auth (default-user requirepass; primary auth knob) ---
+# Secret-ref only — passwords are NEVER inlined into the CR (ADR-008).
+auth:
+  enabled: true
+  # Secret holding the default-user password(s). Empty => operator derives <cluster>-users.
+  passwordSecret:
+    name: ""
+    keys: []                  # multiple keys enable multi-password rotation
+
+# --- spec.tls (secret-ref XOR cert-manager; mutually exclusive) ---
+tls:
+  enabled: false
+  # Secret-ref mode: a pre-existing Secret with ca.crt / tls.crt / tls.key.
+  secretName: ""
+  # cert-manager mode (recommended): operator provisions an auto-rotated Certificate.
+  certManager:
+    enabled: false
+    issuerRef:
+      name: ""
+      kind: Issuer            # Issuer | ClusterIssuer
+  # Client-cert (mTLS) policy: off | optional | require.
+  authClients: optional
+  ciphers: ""                 # TLS<=1.2 cipher list (OpenSSL syntax)
+  cipherSuites: ""            # TLS 1.3 cipher suites
+
+# --- spec.users (named ACL users) -> rendered into the CR; passwords stay in Secrets ---
+# Each entry maps 1:1 to UserACLSpec. Names starting with "_" are reserved (rejected).
+users: []
+#  - name: app
+#    enabled: true
+#    passwordSecret:
+#      name: app-users
+#      keys: [app-current, app-previous]   # multi-password rotation
+#    commands:
+#      allow: ["@read", "@write"]
+#      deny:  ["@admin"]
+#    keys:
+#      readWrite: ["app:*"]
+
+# --- spec.disableCommands (rename-command <CMD> "") ---
+# Empty list => operator default ([FLUSHALL, FLUSHDB]); set to override.
+disableCommands: []
+#  - FLUSHALL
+#  - FLUSHDB
+
+# --- spec.exporter (Prometheus metrics sidecar) ---
+exporter:
+  enabled: true
+  image: "percona/valkey-exporter:1.0.0"
+  port: 9121
+  scrapeInterval: "20s"
+  tls:
+    enabled: false           # serve /metrics over HTTPS using the cluster cert family
+
+# --- spec.expose (external client access; maps to the reference chart externalAccess) ---
+expose:
+  enabled: false
+  type: ClusterIP            # ClusterIP | NodePort | LoadBalancer
+  loadBalancerSourceRanges: []
+  annotations: {}
+  perPod: false              # one external Service per node + cluster-announce-ip (cluster mode)
+
+# --- spec.networkPolicy (operator-managed default-deny perimeter; opt-in) ---
+networkPolicy:
+  enabled: false
+  monitoringNamespace: ""     # namespace allowed to scrape the exporter ("" => own namespace)
+  clientNamespaceSelectors: []
+  clientPodSelectors: []
+
+# --- spec.podDisruptionBudget ---
+podDisruptionBudget: Managed  # Managed | Disabled
+
+# --- scheduling (spec.nodeSelector / spec.tolerations / spec.affinity / spreadConstraints) ---
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+# --- spec.backup ---
+backup:
+  enabled: false
+  image: "percona/valkey-backup:8.0.2"
+  # Named storage backends keyed by storageName.
+  storages: {}
+  #  s3-primary:
+  #    type: s3
+  #    s3:
+  #      bucket: percona-valkey-backups
+  #      prefix: prod
+  #      region: eu-central-1
+  #      credentialsSecret: prod-s3-creds
+  # Cron-driven scheduled backups.
+  schedule: []
+  #  - name: nightly-full
+  #    schedule: "0 2 * * *"
+  #    storageName: s3-primary
+  #    keep: 7
+  #    type: full
+
+# --- spec.upgradeOptions (version service / smart updates) ---
+upgradeOptions:
+  apply: Disabled             # Disabled | Recommended | Latest | <version>
+  schedule: "0 4 * * *"
+  versionServiceEndpoint: https://check.percona.com
+
+# --- Secret authoring helpers (rendered into Secrets, never the CR) ---
+# Provide passwords here ONLY for dev/test convenience; production should reference a
+# pre-existing Secret via auth.passwordSecret.name / users[].passwordSecret.name and leave
+# these empty. When set, the chart creates the named Secret with stringData.
+secrets:
+  # Create the default-user Secret (auth.passwordSecret.name) from a literal password.
+  # Leave empty to reference an externally-managed Secret.
+  defaultUserPassword: ""

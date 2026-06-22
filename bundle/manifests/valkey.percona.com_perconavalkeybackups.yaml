@@ -1,0 +1,439 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: perconavalkeybackups.valkey.percona.com
+spec:
+  group: valkey.percona.com
+  names:
+    kind: PerconaValkeyBackup
+    listKind: PerconaValkeyBackupList
+    plural: perconavalkeybackups
+    shortNames:
+    - pvk-backup
+    singular: perconavalkeybackup
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clusterName
+      name: Cluster
+      type: string
+    - jsonPath: .spec.storageName
+      name: Storage
+      type: string
+    - jsonPath: .status.state
+      name: State
+      type: string
+    - jsonPath: .status.slotCoverage
+      name: Coverage
+      type: string
+    - jsonPath: .status.destination
+      name: Destination
+      priority: 1
+      type: string
+    - jsonPath: .status.completed
+      name: Completed
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PerconaValkeyBackup is a user-facing on-demand backup CR. It references a
+          PerconaValkeyCluster by name and is NOT owned by the cluster — the artifact
+          outlives cluster deletion. 03 §7 / ADR-004.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PerconaValkeyBackupSpec mirrors the Percona Backup CRD minimalism: it carries
+              only the cluster name, the storage name and the type; the rest resolves from
+              the cluster / lands in status. 03 §7.1.
+            properties:
+              activeDeadlineSeconds:
+                default: 3600
+                description: activeDeadlineSeconds is a hard cap on backup Job runtime
+                  before failing.
+                format: int64
+                type: integer
+              clusterName:
+                description: |-
+                  clusterName is the target PerconaValkeyCluster in the same namespace.
+                  Immutable.
+                type: string
+              consistency:
+                default: strict
+                description: consistency is the snapshot-coordination mode across
+                  shards. Immutable.
+                enum:
+                - strict
+                - best-effort
+                type: string
+              containerOptions:
+                description: |-
+                  containerOptions are extra args/env and tuning knobs for the backup tool.
+                  Immutable.
+                properties:
+                  args:
+                    description: args are extra CLI args for the backup tool.
+                    items:
+                      type: string
+                    type: array
+                  compressionLevel:
+                    description: compressionLevel tunes the RDB compression level.
+                    type: integer
+                  env:
+                    description: env are extra environment variables for the backup
+                      container.
+                    items:
+                      description: EnvVar represents an environment variable present
+                        in a Container.
+                      properties:
+                        name:
+                          description: |-
+                            Name of the environment variable.
+                            May consist of any printable ASCII characters except '='.
+                          type: string
+                        value:
+                          description: |-
+                            Variable references $(VAR_NAME) are expanded
+                            using the previously defined environment variables in the container and
+                            any service environment variables. If a variable cannot be resolved,
+                            the reference in the input string will be unchanged. Double $$ are reduced
+                            to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e.
+                            "$$(VAR_NAME)" will produce the string literal "$(VAR_NAME)".
+                            Escaped references will never be expanded, regardless of whether the variable
+                            exists or not.
+                            Defaults to "".
+                          type: string
+                        valueFrom:
+                          description: Source for the environment variable's value.
+                            Cannot be used if value is not empty.
+                          properties:
+                            configMapKeyRef:
+                              description: Selects a key of a ConfigMap.
+                              properties:
+                                key:
+                                  description: The key to select.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap or its
+                                    key must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            fieldRef:
+                              description: |-
+                                Selects a field of the pod: supports metadata.name, metadata.namespace, `metadata.labels['<KEY>']`, `metadata.annotations['<KEY>']`,
+                                spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podIPs.
+                              properties:
+                                apiVersion:
+                                  description: Version of the schema the FieldPath
+                                    is written in terms of, defaults to "v1".
+                                  type: string
+                                fieldPath:
+                                  description: Path of the field to select in the
+                                    specified API version.
+                                  type: string
+                              required:
+                              - fieldPath
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            fileKeyRef:
+                              description: |-
+                                FileKeyRef selects a key of the env file.
+                                Requires the EnvFiles feature gate to be enabled.
+                              properties:
+                                key:
+                                  description: |-
+                                    The key within the env file. An invalid key will prevent the pod from starting.
+                                    The keys defined within a source may consist of any printable ASCII characters except '='.
+                                    During Alpha stage of the EnvFiles feature gate, the key size is limited to 128 characters.
+                                  type: string
+                                optional:
+                                  default: false
+                                  description: |-
+                                    Specify whether the file or its key must be defined. If the file or key
+                                    does not exist, then the env var is not published.
+                                    If optional is set to true and the specified key does not exist,
+                                    the environment variable will not be set in the Pod's containers.
+
+                                    If optional is set to false and the specified key does not exist,
+                                    an error will be returned during Pod creation.
+                                  type: boolean
+                                path:
+                                  description: |-
+                                    The path within the volume from which to select the file.
+                                    Must be relative and may not contain the '..' path or start with '..'.
+                                  type: string
+                                volumeName:
+                                  description: The name of the volume mount containing
+                                    the env file.
+                                  type: string
+                              required:
+                              - key
+                              - path
+                              - volumeName
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            resourceFieldRef:
+                              description: |-
+                                Selects a resource of the container: only resources limits and requests
+                                (limits.cpu, limits.memory, limits.ephemeral-storage, requests.cpu, requests.memory and requests.ephemeral-storage) are currently supported.
+                              properties:
+                                containerName:
+                                  description: 'Container name: required for volumes,
+                                    optional for env vars'
+                                  type: string
+                                divisor:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  description: Specifies the output format of the
+                                    exposed resources, defaults to "1"
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                resource:
+                                  description: 'Required: resource to select'
+                                  type: string
+                              required:
+                              - resource
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            secretKeyRef:
+                              description: Selects a key of a secret in the pod's
+                                namespace
+                              properties:
+                                key:
+                                  description: The key of the secret to select from.  Must
+                                    be a valid secret key.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the Secret or its key
+                                    must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  parallelShards:
+                    description: parallelShards caps how many shards are snapshotted
+                      in parallel.
+                    type: integer
+                  preferReplica:
+                    description: preferReplica snapshots from a replica when available.
+                    type: boolean
+                type: object
+              retention:
+                description: retention is the count/age GC policy for this backup-set.
+                properties:
+                  keep:
+                    description: keep is the count of backups to retain (0 = unlimited).
+                    type: integer
+                  keepAge:
+                    description: keepAge is a duration string; backups older than
+                      this are GC'd.
+                    type: string
+                type: object
+              startingDeadlineSeconds:
+                description: |-
+                  startingDeadlineSeconds is the scheduled-backup missed-window tolerance:
+                  if the Job cannot start within this window the backup is marked Failed.
+                format: int64
+                type: integer
+              storageName:
+                description: |-
+                  storageName is a key into the cluster's spec.backup.storages. No fallback;
+                  a typo fails at execution (validated in CheckNSetDefaults). Immutable.
+                type: string
+              type:
+                default: full
+                description: type is the snapshot type (RDB BGSAVE per shard). Immutable.
+                enum:
+                - full
+                type: string
+            required:
+            - clusterName
+            - storageName
+            type: object
+          status:
+            description: PerconaValkeyBackupStatus is the backup status (03 §7.2).
+            properties:
+              azure:
+                description: azure holds resolved Azure storage details copied from
+                  the cluster.
+                properties:
+                  container:
+                    description: container is the Azure Blob container name.
+                    type: string
+                  credentialsSecret:
+                    description: credentialsSecret holds the storage-account credentials.
+                    type: string
+                  prefix:
+                    description: prefix is the blob prefix within the container.
+                    type: string
+                required:
+                - container
+                type: object
+              completed:
+                description: completed is the completion timestamp.
+                format: date-time
+                type: string
+              destination:
+                description: destination is the backend-prefixed root (s3://bucket/prefix/<backup>,
+                  ...).
+                type: string
+              gcs:
+                description: gcs holds resolved GCS storage details copied from the
+                  cluster.
+                properties:
+                  bucket:
+                    description: bucket is the GCS bucket name.
+                    type: string
+                  credentialsSecret:
+                    description: credentialsSecret holds the service-account credentials.
+                    type: string
+                  prefix:
+                    description: prefix is the object prefix within the bucket.
+                    type: string
+                required:
+                - bucket
+                type: object
+              s3:
+                description: |-
+                  s3 holds resolved S3 storage details copied from the cluster at execution
+                  time (so restore is self-contained).
+                properties:
+                  bucket:
+                    description: bucket is the S3 bucket name.
+                    type: string
+                  credentialsSecret:
+                    description: credentialsSecret holds the access credentials.
+                    type: string
+                  endpointUrl:
+                    description: endpointUrl overrides the S3 endpoint (for S3-compatible
+                      stores).
+                    type: string
+                  prefix:
+                    description: prefix is the key prefix within the bucket.
+                    type: string
+                  region:
+                    description: region is the S3 region.
+                    type: string
+                required:
+                - bucket
+                type: object
+              shards:
+                description: |-
+                  shards is per-shard slot-coverage metadata so restore can verify all 16384
+                  slots are represented.
+                items:
+                  description: |-
+                    ShardBackupStatus is per-shard slot-coverage metadata so restore can verify
+                    all 16384 slots are represented.
+                  properties:
+                    checksum:
+                      description: checksum is the RDB object checksum.
+                      type: string
+                    rdbObject:
+                      description: rdbObject is the backend object key for this shard's
+                        RDB.
+                      type: string
+                    shardIndex:
+                      description: shardIndex is the zero-based shard index.
+                      format: int32
+                      type: integer
+                    sizeBytes:
+                      description: sizeBytes is the RDB object size.
+                      format: int64
+                      type: integer
+                    slotRange:
+                      description: slotRange is the shard's slot range (e.g. "0-5460").
+                      type: string
+                  required:
+                  - shardIndex
+                  type: object
+                type: array
+              slotCoverage:
+                description: slotCoverage indicates whether the captured shards cover
+                  all slots.
+                enum:
+                - complete
+                - partial
+                type: string
+              start:
+                description: start is the start timestamp.
+                format: date-time
+                type: string
+              state:
+                description: state is the backup lifecycle state. "" = New.
+                enum:
+                - ""
+                - Starting
+                - Running
+                - Succeeded
+                - Failed
+                - Error
+                type: string
+              stateDescription:
+                description: stateDescription is human-readable detail.
+                type: string
+              storageName:
+                description: storageName is echoed from spec (status hydration for
+                  restore).
+                type: string
+              valkeyVersion:
+                description: valkeyVersion is the engine version at backup time (restore
+                  compatibility).
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

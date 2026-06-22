@@ -1,0 +1,21 @@
+annotations:
+  # Core OLM registry+v1 bundle annotations. These mirror the LABELs in bundle.Dockerfile;
+  # operator-sdk keeps the two in lockstep. (docs/architecture/10 §4)
+  operators.operatorframework.io.bundle.mediatype.v1: registry+v1
+  operators.operatorframework.io.bundle.manifests.v1: manifests/
+  operators.operatorframework.io.bundle.metadata.v1: metadata/
+  operators.operatorframework.io.bundle.package.v1: valkey-operator
+  # Channel membership is baked here (and into the CSV) at `make bundle` time, NOT at
+  # catalog time (docs/architecture/10 §4.1). OQ-3: at v1alpha1 the only channel is
+  # `candidate`; `fast`/`stable` open at GA when the API graduates to v1.
+  operators.operatorframework.io.bundle.channels.v1: candidate
+  operators.operatorframework.io.bundle.channel.default.v1: candidate
+  operators.operatorframework.io.metrics.builder: operator-sdk
+  operators.operatorframework.io.metrics.mediatype.v1: metrics+v1
+
+  # Scorecard test config location (bundle/tests/scorecard/config.yaml).
+  operators.operatorframework.io.test.mediatype.v1: scorecard+v1
+  operators.operatorframework.io.test.config.v1: tests/scorecard/
+
+  # OpenShift / OperatorHub supported-version hint (advisory; widen as tested).
+  com.redhat.openshift.versions: v4.12-v4.18

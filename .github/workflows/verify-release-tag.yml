@@ -1,0 +1,50 @@
+# verify-release-tag.yml — docs drift guard (arch 10 §5.1 trap, §6.1 trap 5, OPS-7.9).
+#
+# The docs site links operator files as blob/v<release>/... and sets {{release}} from
+# website/variables.yml. If `release:` is bumped before the operator tag v<release> exists,
+# every such link 404s. This job fails when website/variables.yml `release:` has no matching
+# git tag — run it before any `mike deploy`.
+#
+# It only READS git refs and a YAML value; it spins up no cluster and pushes nothing.
+name: verify-release-tag
+
+on:
+  pull_request:
+    paths:
+      - 'website/variables.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'website/variables.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: variables.yml release == existing v<release> tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need all tags to verify the v<release> tag exists.
+          fetch-depth: 0
+      - name: Install yq
+        uses: mikefarah/yq@v4
+      - name: Verify release tag exists
+        run: |
+          set -euo pipefail
+          release="$(yq -r '.release' website/variables.yml)"
+          if [ -z "${release}" ] || [ "${release}" = "null" ]; then
+            echo "::error::website/variables.yml has no 'release:' value"
+            exit 1
+          fi
+          tag="v${release}"
+          echo "docs release: ${release} -> expecting git tag ${tag}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "OK: tag ${tag} exists"
+          else
+            echo "::error::docs release '${release}' has no matching operator tag ${tag} — tag the operator before publishing docs (arch 10 §5.1 trap)"
+            exit 1
+          fi

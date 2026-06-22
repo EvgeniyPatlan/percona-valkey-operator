@@ -1,0 +1,42 @@
+# e2e-tests/release_versions — SINGLE SOURCE OF TRUTH for the ENGINE/IMAGE axis.
+#
+# This file is the *only* place engine/sidecar image tags are edited. `make release`
+# reads it and rewrites EVERY image field in deploy/cr*.yaml to the GA percona/* tags
+# below. Three other hand-edited copies of these numbers exist downstream
+# (chart values.yaml, docs variables.yml, docs versions.md) — they have NO automated
+# sync, so after a bump here you must propagate per docs/architecture/10 §6 and RELEASE.md.
+#
+# Format: KEY=value, shell-sourceable (no spaces around =), '#' comments.
+#   - IMAGE_* values are FULL image references (repo:tag), GA percona/* registry.
+#   - hack/release.sh sources this file; `make after-release` does NOT — it derives
+#     perconalab/*:main-* dev tags from the repo names below.
+#
+# TRAP (docs/architecture/10 §2.1): all containers in a Valkey pod must be a COMPATIBLE
+# SET — the exporter must understand the running Valkey version and the backup tool must
+# match the server RDB/AOF format. There is NO version negotiation. NEVER bump one image
+# in isolation; bump the whole consistent set together.
+#
+# TRAP (docs/architecture/10 §1, #1 footgun): the operator-version axis lives in
+# pkg/version/version.txt, NOT here. Do not put the operator semver here except as
+# IMAGE_OPERATOR's tag, which `make release VERSION=x.y.z` overrides from VERSION anyway.
+
+# --- Operator image (operator axis; tag overridden by VERSION at `make release`) ---
+IMAGE_OPERATOR=percona/valkey-operator:0.1.0
+
+# --- Valkey server/engine images (one IMAGE_VALKEY<major><minor> per supported line) ---
+# percona/percona-valkey carries the engine + the in-pod sidecars (valkey-backup,
+# healthcheck, peer-list) built from Dockerfile.sidecar.
+IMAGE_VALKEY90=percona/percona-valkey:9.0.0
+IMAGE_VALKEY80=percona/percona-valkey:8.0.2
+
+# Default engine line pinned into deploy/cr*.yaml `spec.image`.
+IMAGE_VALKEY_DEFAULT=percona/percona-valkey:8.0.2
+
+# --- Backup tool image (OQ-1: standalone image; may fold into server image later) ---
+IMAGE_BACKUP=percona/valkey-backup:8.0.2
+
+# --- Exporter image (OQ-2: Percona-owned; fallback oliver006/redis_exporter) ---
+IMAGE_EXPORTER=percona/valkey-exporter:1.0.0
+
+# --- cert-manager version (also synced into e2e-tests/vars.sh from go.mod by release.sh) ---
+CERT_MANAGER_VER=1.16.2

@@ -1,0 +1,255 @@
+# release.yml — GA RELEASE pipeline (HUMAN-GATED, NEVER auto-fires).
+#
+# ============================ PUBLISHING IS HUMAN-APPROVED ===================
+# This workflow performs OUTWARD actions (pushes the four GA percona/* images
+# and runs chart-releaser). It is deliberately wired so it CANNOT run on an
+# ordinary push or PR:
+#
+#   * NO `push:`/`pull_request:` trigger — it runs ONLY on `workflow_dispatch`
+#     (a human clicks "Run workflow") or on an explicitly-created `v*` tag.
+#   * Every push/publish job declares `environment: release-approval`, so the
+#     GitHub Environment's required-reviewers gate BLOCKS the job until a human
+#     approves it in the Actions UI (configure the environment with reviewers).
+#   * `workflow_dispatch` additionally requires `inputs.confirm == "RELEASE"`;
+#     any other value makes the publish jobs no-op (build-only, push: false).
+#
+# Read the registry split (arch 10 §2.1): GA = percona/*, dev/main = perconalab/*.
+# Only this workflow (after approval) writes GA percona/* images. The per-PR /
+# per-main image build lives in publish.yml and targets perconalab/ only.
+# ============================================================================
+name: release
+
+on:
+  # Manual, human-initiated only. No push/PR trigger by design.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'GA semver to release, e.g. 0.1.0 (no leading v). Must match an existing v<version> git tag.'
+        required: true
+        type: string
+      confirm:
+        description: 'Type RELEASE to actually push GA artefacts. Anything else = dry-run (build only, no push).'
+        required: true
+        default: 'dry-run'
+        type: string
+      publish_charts:
+        description: 'Also run chart-releaser for the in-repo charts/ (requires approval).'
+        required: false
+        default: false
+        type: boolean
+  push:
+    # A v* tag is created by a human as the final, intentional release step
+    # (arch 10 §8.3 "tag the operator"). Even on a tag, the publish jobs still
+    # require the release-approval environment gate below.
+    tags: ['v*']
+
+# Never run two GA releases for the same ref at once.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 0. Resolve the release version + whether this run is allowed to push.
+  #    `should_push` is true ONLY for a v* tag push OR a dispatch with
+  #    confirm == "RELEASE". Everything downstream reads this.
+  # ---------------------------------------------------------------------------
+  resolve:
+    name: resolve version + push gate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      should_push: ${{ steps.v.outputs.should_push }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: v
+        name: resolve
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+            push="true"
+          else
+            ver="${{ inputs.version }}"
+            if [[ "${{ inputs.confirm }}" == "RELEASE" ]]; then push="true"; else push="false"; fi
+          fi
+          # Footgun guard (arch 10 §1): a real GA version is strict x.y.z.
+          if [[ ! "${ver}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version '${ver}' is not x.y.z — refusing (branch-name footgun, arch 10 §1)"
+            exit 1
+          fi
+          echo "version=${ver}" >>"$GITHUB_OUTPUT"
+          echo "should_push=${push}" >>"$GITHUB_OUTPUT"
+          echo "Resolved version=${ver} should_push=${push}"
+
+  # ---------------------------------------------------------------------------
+  # 1. Verify the operator git tag v<version> exists (arch 10 §5.1 / §8.3:
+  #    images and docs reference blob/v<release>/... ; tag BEFORE publishing).
+  # ---------------------------------------------------------------------------
+  verify-tag:
+    name: verify v<version> tag exists
+    runs-on: ubuntu-latest
+    needs: resolve
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: assert tag present
+        run: |
+          set -euo pipefail
+          tag="v${{ needs.resolve.outputs.version }}"
+          if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::error::tag ${tag} does not exist — create it before releasing (arch 10 §8.3)"
+            exit 1
+          fi
+          echo "tag ${tag} present"
+
+  # ---------------------------------------------------------------------------
+  # 2. Build (+ optionally PUSH) the FOUR GA images to percona/*.
+  #    `environment: release-approval` BLOCKS this job on a human reviewer when
+  #    push is requested. When should_push=false the job still runs but every
+  #    build-push-action has push:false (pure validation build).
+  # ---------------------------------------------------------------------------
+  images:
+    name: build + (gated) push GA images
+    runs-on: ubuntu-latest
+    needs: [resolve, verify-tag]
+    # Required-reviewers gate: configure this Environment in repo settings with
+    # human reviewers so the job pauses for approval before any GA push.
+    environment: release-approval
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      DO_PUSH: ${{ needs.resolve.outputs.should_push }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          echo "git_commit=$(git rev-parse --short HEAD)" >>"$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$GITHUB_OUTPUT"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Login ONLY when actually pushing (keeps dry-runs credential-free).
+      - name: Login to registry (only when pushing GA)
+        if: env.DO_PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # --- operator image -> percona/valkey-operator:<version> ---
+      - name: operator image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.DO_PUSH == 'true' }}   # GA PUSH (human-approved env gate)
+          tags: percona/valkey-operator:${{ env.VERSION }}
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            GIT_COMMIT=${{ steps.meta.outputs.git_commit }}
+            BUILD_TIME=${{ steps.meta.outputs.build_time }}
+
+      # --- server image -> percona/percona-valkey:<version> ---
+      # The engine base image is pinned by the server build pipeline; here we
+      # only layer the in-pod sidecars onto whatever VALKEY_BASE_IMAGE resolves.
+      - name: server image (engine + sidecars)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.sidecar
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.DO_PUSH == 'true' }}   # GA PUSH (human-approved env gate)
+          tags: percona/percona-valkey:${{ env.VERSION }}
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            GIT_COMMIT=${{ steps.meta.outputs.git_commit }}
+            BUILD_TIME=${{ steps.meta.outputs.build_time }}
+
+      # --- backup image -> percona/valkey-backup:<version> (OQ-1) ---
+      - name: backup image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.sidecar
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.DO_PUSH == 'true' }}   # GA PUSH (human-approved env gate)
+          tags: percona/valkey-backup:${{ env.VERSION }}
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            GIT_COMMIT=${{ steps.meta.outputs.git_commit }}
+            BUILD_TIME=${{ steps.meta.outputs.build_time }}
+
+      # --- exporter image -> percona/valkey-exporter:<version> (OQ-2) ---
+      - name: exporter image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.sidecar
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.DO_PUSH == 'true' }}   # GA PUSH (human-approved env gate)
+          tags: percona/valkey-exporter:${{ env.VERSION }}
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            GIT_COMMIT=${{ steps.meta.outputs.git_commit }}
+            BUILD_TIME=${{ steps.meta.outputs.build_time }}
+
+      - name: summary
+        run: |
+          if [[ "${DO_PUSH}" == "true" ]]; then
+            echo "Pushed GA percona/* images at ${VERSION} (human-approved)."
+          else
+            echo "DRY-RUN: built all four images, pushed NOTHING (set confirm=RELEASE to publish)."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # 3. chart-releaser — packages the in-repo charts/ and publishes GitHub
+  #    Releases + the gh-pages index (arch 10 §3.4). Runs ONLY when explicitly
+  #    requested AND approved (publish_charts input + release-approval gate +
+  #    should_push). Normally charts live in percona-helm-charts; this job is
+  #    provided for repos that vendor the charts here.
+  # ---------------------------------------------------------------------------
+  charts:
+    name: chart-releaser (gated)
+    runs-on: ubuntu-latest
+    needs: [resolve, images]
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish_charts == true &&
+      needs.resolve.outputs.should_push == 'true'
+    environment: release-approval
+    permissions:
+      contents: write   # chart-releaser creates Releases + writes gh-pages
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure git identity
+        run: |
+          git config user.name "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+      # chart-releaser publishes a chart only when its Chart.yaml `version:` has
+      # no existing Release (skip_existing). Forgetting the `version` bump =
+      # silent skip (arch 10 §3.1, §6.1 trap 3).
+      - name: Run chart-releaser
+        uses: helm/chart-releaser-action@v1
+        with:
+          charts_dir: charts
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CR_SKIP_EXISTING: "true"

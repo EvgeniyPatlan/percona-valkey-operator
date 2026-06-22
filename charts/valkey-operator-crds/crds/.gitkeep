@@ -1,0 +1,4 @@
+# Same CRD-sync rule as the valkey-operator chart: copy deploy/crd.yaml here after every
+# `make generate && make manifests`. Standalone CRD-only chart (OQ-4) for GitOps where CRD
+# lifecycle is managed separately from RBAC/Deployment. Publishing is OPTIONAL for the first
+# release. (docs/architecture/10 §3, §6.1 trap 7)

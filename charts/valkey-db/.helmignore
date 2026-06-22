@@ -1,0 +1,6 @@
+.git
+*.tmp
+*.bak
+ci/
+tests/
+README.md

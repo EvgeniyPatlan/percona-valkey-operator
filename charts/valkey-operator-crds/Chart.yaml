@@ -1,0 +1,15 @@
+apiVersion: v2
+name: valkey-operator-crds
+description: CRD-only chart for the Percona Operator for Valkey — manage CRD lifecycle separately from RBAC/Deployment (GitOps). Optional (OQ-4); mirrors psmdb-operator-crds.
+type: application
+appVersion: "0.1.0"
+version: 0.1.0
+kubeVersion: ">=1.30.0-0"
+keywords: [valkey, percona, crd, operator, kubernetes]
+home: https://docs.percona.com/percona-operator-for-valkey/
+icon: https://www.percona.com/sites/default/files/favicon.ico
+sources:
+  - https://github.com/percona/percona-valkey-operator
+maintainers:
+  - name: Percona
+    url: https://www.percona.com

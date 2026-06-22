@@ -1,0 +1,37 @@
+# variables.yml — injected into every page via the `macros` plugin
+# (macros.include_yaml: ["variables.yml"]). Markdown references values as
+# {{ release }}, {{ valkey90recommended }}, etc.
+#
+# ==================== SINGLE VERSION-SOURCE RULE (arch 10 §5.1) ==============
+#   release:        == pkg/version/version.txt (OPERATOR axis). It MUST equal an
+#                      existing operator git tag v<release> or every
+#                      blob/v{{release}}/... link 404s — TAG BEFORE PUBLISHING.
+#   *recommended:   == e2e-tests/release_versions (ENGINE axis). These are a
+#                      hand-edited 3rd copy (chart values.yaml is the 2nd); no
+#                      auto-sync — keep them and docs/versions.md consistent.
+# The verify-release-tag CI job checks the tag exists before `mike` publish.
+# ============================================================================
+
+# --- operator axis -----------------------------------------------------------
+release: 0.1.0
+
+# --- engine axis (mirror e2e-tests/release_versions) -------------------------
+# Valkey server lines (one per supported minor; default line first).
+valkeydefaultrecommended: 8.0.2
+valkey80recommended: 8.0.2
+valkey90recommended: 9.0.0
+# Backup tool + exporter (OQ-1 / OQ-2 — Percona-owned images).
+backuprecommended: 8.0.2
+exporterrecommended: 1.0.0
+# Tooling / platform pins.
+certmanagerrecommended: 1.16.2
+kubernetesmin: "1.30"
+
+# --- per-release date entries (manual; one per published release) ------------
+# Key shape: <maj>_<min>_<patch>: "YYYY-MM-DD" (arch 10 §5.1).
+date:
+  0_1_0: "2026-06-22"
+
+# --- static link bases (used by main.py macros + raw links) ------------------
+operatorrepo: https://github.com/percona/percona-valkey-operator
+helmrepo: https://percona.github.io/percona-helm-charts/

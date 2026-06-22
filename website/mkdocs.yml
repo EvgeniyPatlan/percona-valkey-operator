@@ -1,0 +1,9 @@
+# mkdocs.yml — the public Material build. Thin by design: it inherits the shared
+# nav/plugins/extra from mkdocs-base.yml (arch 10 §5). Edit nav + plugin config
+# in mkdocs-base.yml, NOT here.
+#
+# Build (CI / docs machine only; mkdocs is absent in the dev env):
+#   pip install -r requirements.txt
+#   mkdocs build --strict          # fail on broken refs / unresolved macros
+#   mike deploy <version>          # publish a versioned site (latest alias only at GA)
+INHERIT: mkdocs-base.yml

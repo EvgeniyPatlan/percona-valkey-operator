@@ -1,0 +1,338 @@
+suite: valkey-db PerconaValkeyCluster CR
+templates:
+  - perconavalkeycluster.yaml
+  - secret-default-user.yaml
+release:
+  name: my-valkey
+  namespace: valkey
+tests:
+  # ---- identity / defaults ----
+  - it: renders a PerconaValkeyCluster named after the release
+    template: perconavalkeycluster.yaml
+    asserts:
+      - isKind:
+          of: PerconaValkeyCluster
+      - equal:
+          path: apiVersion
+          value: valkey.percona.com/v1alpha1
+      - equal:
+          path: metadata.name
+          value: my-valkey
+      - equal:
+          path: metadata.namespace
+          value: valkey
+
+  - it: maps default topology values into spec
+    template: perconavalkeycluster.yaml
+    asserts:
+      - equal:
+          path: spec.mode
+          value: cluster
+      - equal:
+          path: spec.shards
+          value: 3
+      - equal:
+          path: spec.replicas
+          value: 2
+      - equal:
+          path: spec.workloadType
+          value: StatefulSet
+      - equal:
+          path: spec.image
+          value: "percona/percona-valkey:8.0.2"
+      - equal:
+          path: spec.podDisruptionBudget
+          value: Managed
+
+  - it: honours mode / shards / replicas overrides
+    template: perconavalkeycluster.yaml
+    set:
+      mode: replication
+      shards: 1
+      replicas: 5
+    asserts:
+      - equal:
+          path: spec.mode
+          value: replication
+      - equal:
+          path: spec.shards
+          value: 1
+      - equal:
+          path: spec.replicas
+          value: 5
+
+  # ---- persistence ----
+  - it: renders persistence when enabled
+    template: perconavalkeycluster.yaml
+    asserts:
+      - equal:
+          path: spec.persistence.size
+          value: "20Gi"
+      - equal:
+          path: spec.persistence.reclaimPolicy
+          value: Retain
+
+  - it: omits the persistence block for cache mode (Deployment)
+    template: perconavalkeycluster.yaml
+    set:
+      workloadType: Deployment
+      persistence.enabled: false
+    asserts:
+      - notExists:
+          path: spec.persistence
+
+  - it: sets storageClassName only when provided
+    template: perconavalkeycluster.yaml
+    set:
+      persistence.storageClassName: fast-ssd
+    asserts:
+      - equal:
+          path: spec.persistence.storageClassName
+          value: fast-ssd
+
+  # ---- auth ----
+  - it: derives the default-user Secret name from the release
+    template: perconavalkeycluster.yaml
+    asserts:
+      - equal:
+          path: spec.auth.enabled
+          value: true
+      - equal:
+          path: spec.auth.passwordSecret.name
+          value: my-valkey-users
+
+  - it: honours an explicit default-user Secret name and rotation keys
+    template: perconavalkeycluster.yaml
+    set:
+      auth.passwordSecret.name: prod-users
+      auth.passwordSecret.keys:
+        - current
+        - previous
+    asserts:
+      - equal:
+          path: spec.auth.passwordSecret.name
+          value: prod-users
+      - equal:
+          path: spec.auth.passwordSecret.keys[0]
+          value: current
+
+  - it: disables auth when auth.enabled=false
+    template: perconavalkeycluster.yaml
+    set:
+      auth.enabled: false
+    asserts:
+      - equal:
+          path: spec.auth.enabled
+          value: false
+
+  # ---- tls ----
+  - it: omits the tls block when disabled
+    template: perconavalkeycluster.yaml
+    asserts:
+      - notExists:
+          path: spec.tls
+
+  - it: renders cert-manager tls mode
+    template: perconavalkeycluster.yaml
+    set:
+      tls.enabled: true
+      tls.certManager.enabled: true
+      tls.certManager.issuerRef.name: prod-ca-issuer
+      tls.certManager.issuerRef.kind: ClusterIssuer
+      tls.authClients: require
+    asserts:
+      - equal:
+          path: spec.tls.certManager.issuerRef.name
+          value: prod-ca-issuer
+      - equal:
+          path: spec.tls.certManager.issuerRef.kind
+          value: ClusterIssuer
+      - equal:
+          path: spec.tls.authClients
+          value: require
+      - notExists:
+          path: spec.tls.secretName
+
+  - it: renders secret-ref tls mode
+    template: perconavalkeycluster.yaml
+    set:
+      tls.enabled: true
+      tls.secretName: prod-valkey-tls
+    asserts:
+      - equal:
+          path: spec.tls.secretName
+          value: prod-valkey-tls
+      - notExists:
+          path: spec.tls.certManager
+
+  # ---- users / disableCommands ----
+  - it: renders ACL users into spec.users
+    template: perconavalkeycluster.yaml
+    set:
+      users:
+        - name: app
+          enabled: true
+          commands:
+            allow:
+              - "@read"
+              - "@write"
+    asserts:
+      - equal:
+          path: spec.users[0].name
+          value: app
+      - equal:
+          path: spec.users[0].commands.allow[0]
+          value: "@read"
+
+  - it: omits disableCommands when empty (operator default applies)
+    template: perconavalkeycluster.yaml
+    asserts:
+      - notExists:
+          path: spec.disableCommands
+
+  - it: renders disableCommands when provided
+    template: perconavalkeycluster.yaml
+    set:
+      disableCommands:
+        - FLUSHALL
+        - FLUSHDB
+        - KEYS
+    asserts:
+      - equal:
+          path: spec.disableCommands[2]
+          value: KEYS
+
+  # ---- exporter ----
+  - it: enables the exporter with default port and interval
+    template: perconavalkeycluster.yaml
+    asserts:
+      - equal:
+          path: spec.exporter.enabled
+          value: true
+      - equal:
+          path: spec.exporter.port
+          value: 9121
+      - equal:
+          path: spec.exporter.scrapeInterval
+          value: "20s"
+      - equal:
+          path: spec.exporter.image
+          value: "percona/valkey-exporter:1.0.0"
+
+  - it: enables exporter TLS scraping when requested
+    template: perconavalkeycluster.yaml
+    set:
+      exporter.tls.enabled: true
+    asserts:
+      - equal:
+          path: spec.exporter.tls.enabled
+          value: true
+
+  # ---- expose ----
+  - it: omits expose by default
+    template: perconavalkeycluster.yaml
+    asserts:
+      - notExists:
+          path: spec.expose
+
+  - it: renders a LoadBalancer expose block
+    template: perconavalkeycluster.yaml
+    set:
+      expose.enabled: true
+      expose.type: LoadBalancer
+      expose.perPod: true
+      expose.loadBalancerSourceRanges:
+        - "10.0.0.0/8"
+    asserts:
+      - equal:
+          path: spec.expose.type
+          value: LoadBalancer
+      - equal:
+          path: spec.expose.perPod
+          value: true
+      - equal:
+          path: spec.expose.loadBalancerSourceRanges[0]
+          value: "10.0.0.0/8"
+
+  # ---- networkPolicy ----
+  - it: renders a networkPolicy block with monitoringNamespace
+    template: perconavalkeycluster.yaml
+    set:
+      networkPolicy.enabled: true
+      networkPolicy.monitoringNamespace: monitoring
+    asserts:
+      - equal:
+          path: spec.networkPolicy.enabled
+          value: true
+      - equal:
+          path: spec.networkPolicy.monitoringNamespace
+          value: monitoring
+
+  # ---- backup ----
+  - it: omits backup by default
+    template: perconavalkeycluster.yaml
+    asserts:
+      - notExists:
+          path: spec.backup
+
+  - it: renders backup storages and schedules when enabled
+    template: perconavalkeycluster.yaml
+    set:
+      backup.enabled: true
+      backup.image: "percona/valkey-backup:9.0.0"
+      backup.storages:
+        s3-primary:
+          type: s3
+          s3:
+            bucket: percona-valkey-backups
+            credentialsSecret: prod-s3-creds
+      backup.schedule:
+        - name: nightly-full
+          schedule: "0 2 * * *"
+          storageName: s3-primary
+          keep: 7
+          type: full
+    asserts:
+      - equal:
+          path: spec.backup.image
+          value: "percona/valkey-backup:9.0.0"
+      - equal:
+          path: spec.backup.storages.s3-primary.type
+          value: s3
+      - equal:
+          path: spec.backup.schedule[0].storageName
+          value: s3-primary
+
+  # ---- upgradeOptions ----
+  - it: renders upgradeOptions with the version service endpoint
+    template: perconavalkeycluster.yaml
+    set:
+      upgradeOptions.apply: Recommended
+    asserts:
+      - equal:
+          path: spec.upgradeOptions.apply
+          value: Recommended
+      - equal:
+          path: spec.upgradeOptions.versionServiceEndpoint
+          value: "https://check.percona.com"
+
+  # ---- default-user Secret ----
+  - it: does not create a default-user Secret without a literal password
+    template: secret-default-user.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: creates a default-user Secret when a literal password is supplied (dev/test)
+    template: secret-default-user.yaml
+    set:
+      secrets.defaultUserPassword: dev-only-pw
+    asserts:
+      - isKind:
+          of: Secret
+      - equal:
+          path: metadata.name
+          value: my-valkey-users
+      - equal:
+          path: stringData.password
+          value: dev-only-pw

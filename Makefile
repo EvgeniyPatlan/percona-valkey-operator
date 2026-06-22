@@ -15,8 +15,30 @@ VERSION             ?= $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null | tr 
 IMAGE_TAG_OWNER     ?= perconalab
 IMG                 ?= $(IMAGE_TAG_OWNER)/valkey-operator:$(VERSION)
 
-# Embed the operator version into the binary at build time.
-VERSION_LDFLAGS     ?= -X $(MODULE)/pkg/version.gitVersion=$(VERSION)
+# The four images (operator/server/backup/exporter). All four are buildable here;
+# the engine-axis tags are pinned in e2e-tests/release_versions and baked into
+# deploy/cr*.yaml by `make release`. (docs/architecture/10 §2)
+IMAGE_OPERATOR_REPO ?= $(IMAGE_TAG_OWNER)/valkey-operator
+IMAGE_SERVER_REPO   ?= $(IMAGE_TAG_OWNER)/percona-valkey
+IMAGE_BACKUP_REPO   ?= $(IMAGE_TAG_OWNER)/valkey-backup
+IMAGE_EXPORTER_REPO ?= $(IMAGE_TAG_OWNER)/valkey-exporter
+IMAGE_SERVER        ?= $(IMAGE_SERVER_REPO):$(VERSION)
+IMAGE_BACKUP        ?= $(IMAGE_BACKUP_REPO):$(VERSION)
+IMAGE_EXPORTER      ?= $(IMAGE_EXPORTER_REPO):$(VERSION)
+# Valkey engine base image for the sidecar/server build (overridden by the server pipeline).
+VALKEY_BASE_IMAGE   ?= valkey/valkey:8-alpine
+
+# Engine-axis source of truth (single edit point — docs/architecture/10 §1, §8).
+RELEASE_VERSIONS    ?= e2e-tests/release_versions
+# kuttl e2e vars file that receives the synced CERT_MANAGER_VER.
+E2E_VARS            ?= e2e-tests/vars.sh
+
+# Embed the operator version into the binary at build time. GO-7.2 also stamps commit/time.
+GIT_COMMIT          ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_TIME          ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
+VERSION_LDFLAGS     ?= -X $(MODULE)/pkg/version.gitVersion=$(VERSION) \
+                       -X $(MODULE)/pkg/version.GitCommit=$(GIT_COMMIT) \
+                       -X $(MODULE)/pkg/version.BuildTime=$(BUILD_TIME)
 
 # Pinned Kubernetes version for envtest assets.
 ENVTEST_K8S_VERSION ?= 1.34.1
@@ -36,15 +58,26 @@ KUSTOMIZE           ?= $(LOCALBIN)/kustomize
 ENVTEST             ?= $(LOCALBIN)/setup-envtest
 MOCKGEN             ?= $(LOCALBIN)/mockgen
 GOLANGCI_LINT       ?= $(LOCALBIN)/golangci-lint
+OPERATOR_SDK        ?= $(LOCALBIN)/operator-sdk
+OPM                 ?= $(LOCALBIN)/opm
 
 CONTROLLER_GEN_VERSION ?= v0.19.0
 KUSTOMIZE_VERSION      ?= v5.7.1
 ENVTEST_VERSION        ?= release-0.23
 MOCKGEN_VERSION        ?= v0.6.0
 GOLANGCI_LINT_VERSION  ?= v2.12.2
-# Declared-but-deferred (OLM, wired in M7):
+# OLM tooling (wired in M7). ABSENT in this environment — the bundle/catalog targets
+# guard for them and download into ./bin on a real CI runner; they NEVER push here.
 OPERATOR_SDK_VERSION   ?= v1.41.1
 OPM_VERSION            ?= v1.55.0
+# OS/arch suffixes for the operator-sdk/opm release-binary download URLs.
+OS                  ?= $(shell go env GOOS 2>/dev/null || echo linux)
+ARCH                ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
+
+# Helm charts live in the sibling percona-helm-charts repo; this tree carries source
+# copies under charts/ that legs author and sync. helm-lint/helm-package operate on them.
+HELM                ?= helm
+CHARTS_DIR          ?= charts
 
 # Project Go version (single source of truth: .go-version). golangci-lint must be
 # COMPILED with a Go >= the targeted go directive, so we force its install toolchain
@@ -145,6 +178,45 @@ endif
 .PHONY: docker-build
 docker-build: build ## Alias for `build` (Percona-family vocabulary).
 
+.PHONY: docker-buildx
+docker-buildx: build ## Alias for the multi-arch buildx path (`build` is already buildx-based).
+
+# Multi-arch builds for the three DB-side images (server/backup/exporter). Like `build`,
+# the multi-arch manifest-list path runs ONLY when PUSH=true (CI on main/tag). PUSH defaults
+# to empty so a bare `make build-*` never reaches a registry. (docs/architecture/10 §2)
+.PHONY: build-server
+build-server: ## Build the Valkey server/sidecar image (single-arch --load; multi-arch when PUSH=true).
+ifeq ($(PUSH),true)
+	docker buildx build --platform $(PLATFORMS) --push -f Dockerfile.sidecar \
+	  --build-arg VALKEY_BASE_IMAGE=$(VALKEY_BASE_IMAGE) -t $(IMAGE_SERVER) .
+else
+	docker buildx build --load -f Dockerfile.sidecar \
+	  --build-arg VALKEY_BASE_IMAGE=$(VALKEY_BASE_IMAGE) -t $(IMAGE_SERVER) .
+endif
+
+.PHONY: build-backup
+build-backup: ## Build the Valkey backup-tool image (single-arch --load; multi-arch when PUSH=true).
+ifeq ($(PUSH),true)
+	docker buildx build --platform $(PLATFORMS) --push -f Dockerfile.sidecar \
+	  --build-arg VALKEY_BASE_IMAGE=$(VALKEY_BASE_IMAGE) -t $(IMAGE_BACKUP) .
+else
+	docker buildx build --load -f Dockerfile.sidecar \
+	  --build-arg VALKEY_BASE_IMAGE=$(VALKEY_BASE_IMAGE) -t $(IMAGE_BACKUP) .
+endif
+
+.PHONY: build-exporter
+build-exporter: ## Build the Valkey exporter image (single-arch --load; multi-arch when PUSH=true).
+ifeq ($(PUSH),true)
+	docker buildx build --platform $(PLATFORMS) --push -f Dockerfile.sidecar \
+	  --build-arg VALKEY_BASE_IMAGE=$(VALKEY_BASE_IMAGE) -t $(IMAGE_EXPORTER) .
+else
+	docker buildx build --load -f Dockerfile.sidecar \
+	  --build-arg VALKEY_BASE_IMAGE=$(VALKEY_BASE_IMAGE) -t $(IMAGE_EXPORTER) .
+endif
+
+.PHONY: build-all
+build-all: build build-server build-backup build-exporter ## Build all four images (operator/server/backup/exporter).
+
 ##@ Deployment
 
 .PHONY: install
@@ -195,8 +267,168 @@ golangci-lint: $(LOCALBIN) ## Download golangci-lint if missing.
 	@test -x $(GOLANGCI_LINT) || \
 	  GOBIN=$(LOCALBIN) GOTOOLCHAIN=go$(GO_VERSION) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
-##@ Release (NOT wired until M7 — guarded no-ops so the vocabulary is complete)
+# operator-sdk / opm are downloaded as release binaries into ./bin on a real CI runner.
+# In THIS environment they are absent and have no `go install` path, so the targets print a
+# clear message and download via curl. They are GUARDS ONLY — they never push anything.
+.PHONY: operator-sdk
+operator-sdk: $(LOCALBIN) ## Download operator-sdk into ./bin if missing (no push).
+	@if test -x $(OPERATOR_SDK); then \
+	  echo "operator-sdk present: $(OPERATOR_SDK)"; \
+	else \
+	  echo ">> operator-sdk not found — downloading $(OPERATOR_SDK_VERSION) into $(LOCALBIN) (no network publish)"; \
+	  curl -fsSL -o $(OPERATOR_SDK) \
+	    "https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$(OS)_$(ARCH)" \
+	    && chmod +x $(OPERATOR_SDK) \
+	    || { echo "ERROR: could not fetch operator-sdk; install it manually into $(OPERATOR_SDK)"; exit 1; }; \
+	fi
 
-.PHONY: release after-release update-version bundle bundle-build bundle-push catalog-build catalog-push
-release after-release update-version bundle bundle-build bundle-push catalog-build catalog-push:
-	@echo "[$@] not wired until M7 (Distribution). Pass VERSION=x.y.z when implemented."; exit 1
+.PHONY: opm
+opm: $(LOCALBIN) ## Download opm into ./bin if missing (no push).
+	@if test -x $(OPM); then \
+	  echo "opm present: $(OPM)"; \
+	else \
+	  echo ">> opm not found — downloading $(OPM_VERSION) into $(LOCALBIN) (no network publish)"; \
+	  curl -fsSL -o $(OPM) \
+	    "https://github.com/operator-framework/operator-registry/releases/download/$(OPM_VERSION)/$(OS)-$(ARCH)-opm" \
+	    && chmod +x $(OPM) \
+	    || { echo "ERROR: could not fetch opm; install it manually into $(OPM)"; exit 1; }; \
+	fi
+
+##@ Release (M7 — the version-stamping & GA-pinning vocabulary)
+
+# crVersion is major.minor ONLY (docs/architecture/10 §6.1 trap 2, §8.1 step 2): a patch
+# release (1.1.0 -> 1.1.1) MUST NOT churn crVersion. Computed at parse time so it is visible
+# to recipes and to NEXT_VER below.
+CRVERSION := $(shell echo "$(VERSION)" | cut -d. -f1-2)
+
+# Reusable footgun guard: abort unless VERSION is a real x.y.z (not a branch name).
+# (docs/architecture/10 §1 trap, §6.1 trap 1; impl 08 R2)
+define require-semver-version
+	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' \
+	  || { echo "ERROR: pass VERSION=x.y.z (got '$(VERSION)' — branch-name footgun; arch 10 §1)"; exit 1; }
+endef
+
+.PHONY: release
+release: manifests ## GA pinning on a release-x.y.z branch: stamp version.txt + crVersion + percona/* GA image tags (arch 10 §8.1). PASS VERSION=x.y.z.
+	$(require-semver-version)
+	# version.txt (operator-axis SoT) + crVersion=major.minor + EVERY image -> GA percona/*
+	# pulled from e2e-tests/release_versions. --owner percona is load-bearing (NOT perconalab).
+	./hack/release.sh \
+	  --version $(VERSION) --crversion $(CRVERSION) \
+	  --release-versions $(RELEASE_VERSIONS) \
+	  --cr deploy/cr.yaml --cr deploy/cr-minimal.yaml \
+	  --owner percona
+	# Sync cert-manager version into the kuttl e2e vars (arch 10 §8.1 step 3).
+	./hack/sync-certmanager.sh go.mod $(E2E_VARS)
+	# Regenerate any image-asserting golden fixtures (GO-7.4; never hand-edit).
+	$(MAKE) regen-fixtures
+	@echo "release: GA pinned VERSION=$(VERSION) crVersion=$(CRVERSION). Review 'git diff', then tag v$(VERSION) (human-approved)."
+
+# NEXT_VER is derived from cr.yaml crVersion (major.minor) as major.(minor+1).0 — NOT from
+# version.txt (arch 10 §8.2). Computed at parse time so the update-version PREREQUISITE sees
+# it. Override with `make after-release NEXT_VER=x.y.z`.
+NEXT_VER ?= $(shell ./hack/next-ver.sh deploy/cr.yaml 2>/dev/null)
+
+.PHONY: after-release
+after-release: update-version manifests ## Next dev cycle on main: repoint images to perconalab/*:main-*, bump NEXT_VER (arch 10 §8.2).
+	@echo "$(NEXT_VER)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' \
+	  || { echo "ERROR: NEXT_VER='$(NEXT_VER)' not x.y.z (check deploy/cr.yaml crVersion or pass NEXT_VER=)"; exit 1; }
+	./hack/release.sh \
+	  --version $(NEXT_VER) --crversion $(shell echo "$(NEXT_VER)" | cut -d. -f1-2) \
+	  --cr deploy/cr.yaml --cr deploy/cr-minimal.yaml \
+	  --owner perconalab --dev-tags main
+	@echo "after-release: repointed to perconalab/*:main-* for dev cycle NEXT_VER=$(NEXT_VER). NEVER ship GA from this tree (arch 10 §6.1 trap 6)."
+
+.PHONY: update-version
+update-version: ## Write NEXT_VER into version.txt ONLY (arch 10 §8.2). Does NOT touch crVersion.
+	@echo "$(NEXT_VER)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' \
+	  || { echo "ERROR: NEXT_VER='$(NEXT_VER)' not x.y.z"; exit 1; }
+	echo "$(NEXT_VER)" > pkg/version/version.txt
+
+.PHONY: regen-fixtures
+regen-fixtures: ## Regenerate image-asserting golden fixtures (GO-7.4; deterministic, never hand-edited).
+	GO="$(GO)" ./hack/regen-fixtures.sh
+
+# check-version is conceptually owned by M6 OPS-6.3 (shared hack/check-version.sh); defined
+# here so `make check-version` works and OPS-7.10's check-version.yml can invoke it.
+.PHONY: check-version
+check-version: ## Drift gate: version.txt major.minor == deploy/cr.yaml crVersion (arch 10 §6 rec).
+	./hack/check-version.sh pkg/version/version.txt deploy/cr.yaml
+
+##@ OLM bundle & catalog (operator-sdk / opm — AUTHOR + LOCAL-VALIDATE ONLY, never push)
+
+IMAGE_TAG_BASE  ?= $(IMAGE_TAG_OWNER)/valkey-operator
+BUNDLE_IMG      ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
+CATALOG_IMG     ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
+CHANNELS        ?= candidate
+DEFAULT_CHANNEL ?= candidate
+# Channels at v1alpha1 (OQ-3): default to candidate-only until the API graduates to v1;
+# override CHANNELS=candidate,fast,stable DEFAULT_CHANNEL=stable for a GA release.
+BUNDLE_METADATA_OPTS ?= $(if $(CHANNELS),--channels=$(CHANNELS),) $(if $(DEFAULT_CHANNEL),--default-channel=$(DEFAULT_CHANNEL),)
+BUNDLE_IMGS     ?= $(BUNDLE_IMG)
+# Incremental catalog: CATALOG_BASE_IMG=<prior-catalog> -> --from-index (arch 10 §4.2).
+FROM_INDEX_OPT  := $(if $(CATALOG_BASE_IMG),--from-index $(CATALOG_BASE_IMG),)
+
+.PHONY: bundle
+bundle: manifests kustomize operator-sdk ## Generate the OLM bundle (CSV+CRDs+metadata) into ./bundle. PASS VERSION=x.y.z.
+	$(require-semver-version)
+	$(OPERATOR_SDK) generate kustomize manifests -q
+	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMAGE_OPERATOR_REPO):$(VERSION)
+	$(KUSTOMIZE) build config/manifests | \
+	  $(OPERATOR_SDK) generate bundle --version $(VERSION) $(BUNDLE_METADATA_OPTS)
+	$(OPERATOR_SDK) bundle validate ./bundle
+	@echo "bundle: generated ./bundle for v$(VERSION) channels='$(CHANNELS)' default='$(DEFAULT_CHANNEL)'. Submission to community-operators is a separate, human-approved step."
+
+.PHONY: bundle-build
+bundle-build: ## Build the OLM bundle image locally (NO push; requires PUSH=true to even attempt, which is blocked here).
+	@echo "bundle-build: building $(BUNDLE_IMG) locally (no push)."
+	docker build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
+
+.PHONY: bundle-push
+bundle-push: ## PUBLISH GUARD — pushing the bundle image requires explicit PUSH=true and human approval.
+	@if [ "$(PUSH)" != "true" ]; then \
+	  echo "REFUSING to push: set PUSH=true AND obtain human approval (arch: publishing is human-gated)."; exit 1; \
+	fi
+	@echo "PUSH=true requested for $(BUNDLE_IMG). This is an OUTWARD action — a human operator must run it intentionally."
+	docker push $(BUNDLE_IMG)
+
+.PHONY: catalog-build
+catalog-build: opm ## Build the OLM catalog (index) image locally via opm (NO push). PASS VERSION=x.y.z.
+	$(require-semver-version)
+	$(OPM) index add --mode semver --tag $(CATALOG_IMG) --bundles $(BUNDLE_IMGS) $(FROM_INDEX_OPT) --container-tool docker
+	@echo "catalog-build: built $(CATALOG_IMG). Validate locally with 'make olm-validate' (kind+OLM); never auto-published."
+
+.PHONY: catalog-push
+catalog-push: ## PUBLISH GUARD — pushing the catalog image requires explicit PUSH=true and human approval.
+	@if [ "$(PUSH)" != "true" ]; then \
+	  echo "REFUSING to push: set PUSH=true AND obtain human approval (arch: publishing is human-gated)."; exit 1; \
+	fi
+	@echo "PUSH=true requested for $(CATALOG_IMG). This is an OUTWARD action — a human operator must run it intentionally."
+	docker push $(CATALOG_IMG)
+
+.PHONY: olm-validate
+olm-validate: ## LOCAL kind+OLM validation of the catalog as a CatalogSource (never publishes).
+	./hack/olm-validate.sh $(CATALOG_IMG)
+
+##@ Helm charts (lint/package only — publishing is chart-releaser on the helm repo, never here)
+
+.PHONY: helm-lint
+helm-lint: ## helm lint both source charts (read-only).
+	$(HELM) lint $(CHARTS_DIR)/valkey-operator
+	$(HELM) lint $(CHARTS_DIR)/valkey-db
+
+.PHONY: helm-template
+helm-template: ## Render both charts to stdout for inspection (read-only).
+	$(HELM) template valkey-operator $(CHARTS_DIR)/valkey-operator
+	$(HELM) template valkey-db $(CHARTS_DIR)/valkey-db
+
+.PHONY: helm-package
+helm-package: $(LOCALBIN) ## Package both charts into ./bin (local .tgz only; NO push — publishing is chart-releaser).
+	$(HELM) package $(CHARTS_DIR)/valkey-operator -d $(LOCALBIN)
+	$(HELM) package $(CHARTS_DIR)/valkey-db -d $(LOCALBIN)
+	@echo "helm-package: wrote .tgz to $(LOCALBIN). Charts publish via chart-releaser in percona-helm-charts (Chart.yaml version bump), NOT from here."
+
+.PHONY: helm-crds-sync
+helm-crds-sync: ## Copy deploy/crd.yaml into the operator chart's crds/ (the manual CRD-sync step; arch 10 §3.3).
+	cp deploy/crd.yaml $(CHARTS_DIR)/valkey-operator/crds/crd.yaml
+	@echo "helm-crds-sync: $(CHARTS_DIR)/valkey-operator/crds/crd.yaml <= deploy/crd.yaml"

@@ -1,0 +1,8 @@
+Percona Operator for Valkey {{ .Chart.AppVersion }} installed (chart {{ .Chart.Version }}).
+
+Watch scope: {{ if .Values.watchAllNamespaces }}cluster-wide (all namespaces){{ else }}namespaced ({{ .Release.Namespace }}){{ end }}.
+
+Next: install a cluster with the valkey-db chart:
+  helm install my-valkey percona/valkey-db --namespace {{ .Release.Namespace }}
+
+Docs: https://docs.percona.com/percona-operator-for-valkey/

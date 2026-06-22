@@ -1,0 +1,598 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  name: valkey-operator.v0.1.0
+  namespace: placeholder
+  annotations:
+    # --- OperatorHub display / classification (docs/architecture/10 §4.3) ---
+    capabilities: Basic Install
+    categories: Database
+    containerImage: percona/valkey-operator:0.1.0
+    createdAt: "2026-06-23T00:00:00Z"
+    description: >-
+      Percona Operator for Valkey deploys and manages production-grade Valkey
+      clusters (cluster and standalone modes) on Kubernetes, with TLS, ACL users,
+      scheduled backups, Prometheus metrics, and Percona smart updates.
+    repository: https://github.com/percona/percona-valkey-operator
+    support: Percona
+    # operator-sdk regenerates alm-examples from config/samples; kept in sync by hand here
+    # because operator-sdk is absent in the authoring environment (CI re-renders it).
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "valkey.percona.com/v1alpha1",
+          "kind": "PerconaValkeyCluster",
+          "metadata": { "name": "cluster1" },
+          "spec": {
+            "crVersion": "0.1",
+            "image": "percona/percona-valkey:8.0.2",
+            "mode": "cluster",
+            "shards": 3,
+            "replicas": 2,
+            "workloadType": "StatefulSet",
+            "persistence": { "size": "20Gi" },
+            "exporter": { "enabled": true },
+            "podDisruptionBudget": "Managed",
+            "upgradeOptions": { "apply": "Recommended" }
+          }
+        },
+        {
+          "apiVersion": "valkey.percona.com/v1alpha1",
+          "kind": "PerconaValkeyBackup",
+          "metadata": { "name": "backup1" },
+          "spec": {
+            "clusterName": "cluster1",
+            "storageName": "s3-primary",
+            "type": "full"
+          }
+        },
+        {
+          "apiVersion": "valkey.percona.com/v1alpha1",
+          "kind": "PerconaValkeyRestore",
+          "metadata": { "name": "restore1" },
+          "spec": {
+            "clusterName": "cluster1",
+            "backupName": "backup1",
+            "strategy": "InPlace"
+          }
+        }
+      ]
+spec:
+  displayName: Percona Operator for Valkey
+  version: 0.1.0
+  # First release: no upgrade edges yet. `replaces`/`skips` are added at the SECOND
+  # release once 0.1.0 exists in the catalog (docs/architecture/10 §4.1, §4.3).
+  maturity: alpha
+  minKubeVersion: 1.27.0
+  provider:
+    name: Percona
+    url: https://www.percona.com
+  maintainers:
+    - name: Percona
+      email: info@percona.com
+  keywords:
+    - valkey
+    - redis
+    - cache
+    - database
+    - key-value
+    - percona
+  links:
+    - name: Source Code
+      url: https://github.com/percona/percona-valkey-operator
+    - name: Documentation
+      url: https://docs.percona.com/percona-operator-for-valkey/
+    - name: Percona
+      url: https://www.percona.com
+  description: |-
+    ## Percona Operator for Valkey
+
+    The Percona Operator for Valkey automates deployment and management of
+    [Valkey](https://valkey.io) clusters on Kubernetes. It is built on the
+    controller-runtime reconciliation model used across the Percona operator
+    family (PXC, PSMDB, PS).
+
+    ### Features
+
+    * **Topology modes** — `cluster` (sharded) and `standalone`, driven by
+      `spec.mode`, `spec.shards`, and `spec.replicas`.
+    * **Durable storage** — per-node PersistentVolumeClaims via `spec.persistence`.
+    * **TLS in transit** — secret-ref or cert-manager issued certificates
+      (`spec.tls`).
+    * **ACL users** — declarative Valkey users with command/key permissions and
+      multi-password rotation (`spec.users`), referencing Kubernetes Secrets.
+    * **Backups & restores** — on-demand and scheduled snapshots to S3/GCS/Azure
+      (`PerconaValkeyBackup`) and point-in-time restores (`PerconaValkeyRestore`).
+    * **Observability** — Prometheus exporter sidecar (`spec.exporter`).
+    * **Smart updates** — version-service driven rolling upgrades
+      (`spec.upgradeOptions`).
+
+    ### Before you begin
+
+    Secrets referenced by `spec.tls`, `spec.users`, and backup storage
+    credentials must exist in the cluster; they are never inlined in the CR.
+
+    See the [documentation](https://docs.percona.com/percona-operator-for-valkey/)
+    for the full configuration reference.
+  icon:
+    - base64data: PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iOCIgZmlsbD0iI2M3MTYyYyIvPjx0ZXh0IHg9IjMyIiB5PSI0MiIgZm9udC1mYW1pbHk9IkFyaWFsLEhlbHZldGljYSxzYW5zLXNlcmlmIiBmb250LXNpemU9IjMwIiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSIjZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5WPC90ZXh0Pjwvc3ZnPg==
+      mediatype: image/svg+xml
+  installModes:
+    - type: OwnNamespace
+      supported: true
+    - type: SingleNamespace
+      supported: true
+    - type: MultiNamespace
+      supported: true
+    - type: AllNamespaces
+      supported: true
+  customresourcedefinitions:
+    owned:
+      - name: perconavalkeyclusters.valkey.percona.com
+        kind: PerconaValkeyCluster
+        version: v1alpha1
+        displayName: Percona Valkey Cluster
+        description: >-
+          Top-level user-facing Valkey cluster. Owns all ValkeyNodes plus the
+          headless Service, ConfigMap, Secrets, and PodDisruptionBudget.
+        resources:
+          - kind: StatefulSet
+            version: apps/v1
+          - kind: Deployment
+            version: apps/v1
+          - kind: Service
+            version: v1
+          - kind: ConfigMap
+            version: v1
+          - kind: Secret
+            version: v1
+          - kind: PersistentVolumeClaim
+            version: v1
+          - kind: PodDisruptionBudget
+            version: policy/v1
+        specDescriptors:
+          - path: mode
+            displayName: Topology Mode
+            description: Topology mode (cluster or standalone). Immutable after creation.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:select:cluster"
+              - "urn:alm:descriptor:com.tectonic.ui:select:standalone"
+          - path: shards
+            displayName: Shards
+            description: Number of shard groups.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:number"
+          - path: replicas
+            displayName: Replicas Per Shard
+            description: Replica count per shard. Total pods = shards * (1 + replicas).
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:number"
+          - path: image
+            displayName: Valkey Image
+            description: Valkey server image. Independent of crVersion.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: crVersion
+            displayName: CR Version
+            description: Operator API contract version (major.minor). Auto-stamped if empty.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: persistence
+            displayName: Persistence
+            description: Durable storage propagated to each ValkeyNode.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:fieldGroup:persistence"
+          - path: tls
+            displayName: TLS
+            description: TLS-in-transit configuration. Omit to disable TLS.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:fieldGroup:tls"
+          - path: exporter.enabled
+            displayName: Exporter Enabled
+            description: Enable the Prometheus metrics exporter sidecar.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:booleanSwitch"
+          - path: backup
+            displayName: Backup
+            description: Backup storage definitions and schedules.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:fieldGroup:backup"
+          - path: upgradeOptions.apply
+            displayName: Upgrade Apply Policy
+            description: Smart-update policy (Disabled / Recommended / Latest / explicit version).
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: podDisruptionBudget
+            displayName: Pod Disruption Budget
+            description: Operator-managed PDB policy.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+        statusDescriptors:
+          - path: state
+            displayName: State
+            description: Aggregate cluster state.
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes.phase"
+          - path: host
+            displayName: Endpoint
+            description: Client connection endpoint for the cluster.
+            x-descriptors:
+              - "urn:alm:descriptor:org.w3:link"
+          - path: readyShards
+            displayName: Ready Shards
+            description: Number of shards reporting ready.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:podStatuses"
+          - path: conditions
+            displayName: Conditions
+            description: Latest observed cluster conditions.
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes.conditions"
+      - name: perconavalkeybackups.valkey.percona.com
+        kind: PerconaValkeyBackup
+        version: v1alpha1
+        displayName: Percona Valkey Backup
+        description: >-
+          On-demand backup of a PerconaValkeyCluster. References a cluster by name
+          and a storage key; the artifact outlives the cluster.
+        resources:
+          - kind: Job
+            version: batch/v1
+        specDescriptors:
+          - path: clusterName
+            displayName: Cluster Name
+            description: Target PerconaValkeyCluster in the same namespace.
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes:PerconaValkeyCluster"
+          - path: storageName
+            displayName: Storage Name
+            description: Key into the cluster's spec.backup.storages.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: type
+            displayName: Type
+            description: Snapshot type (full). Immutable.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+        statusDescriptors:
+          - path: state
+            displayName: State
+            description: Backup state.
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes.phase"
+          - path: destination
+            displayName: Destination
+            description: Final storage destination of the backup artifact.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: completed
+            displayName: Completed
+            description: Completion timestamp.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+      - name: perconavalkeyrestores.valkey.percona.com
+        kind: PerconaValkeyRestore
+        version: v1alpha1
+        displayName: Percona Valkey Restore
+        description: >-
+          Restore of a PerconaValkeyBackup (or inline source) into a target
+          PerconaValkeyCluster.
+        resources:
+          - kind: Job
+            version: batch/v1
+        specDescriptors:
+          - path: clusterName
+            displayName: Cluster Name
+            description: Target PerconaValkeyCluster. Immutable.
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes:PerconaValkeyCluster"
+          - path: backupName
+            displayName: Backup Name
+            description: PerconaValkeyBackup in the same namespace to restore from.
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes:PerconaValkeyBackup"
+          - path: strategy
+            displayName: Strategy
+            description: Restore mechanism. Immutable.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+        statusDescriptors:
+          - path: state
+            displayName: State
+            description: Restore state.
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes.phase"
+          - path: completed
+            displayName: Completed
+            description: Completion timestamp.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+      - name: valkeynodes.valkey.percona.com
+        kind: ValkeyNode
+        version: v1alpha1
+        displayName: Valkey Node
+        description: >-
+          INTERNAL per-pod control point created and driven only by the
+          PerconaValkeyCluster controller. Users must not create it directly.
+        resources:
+          - kind: StatefulSet
+            version: apps/v1
+          - kind: Pod
+            version: v1
+        specDescriptors:
+          - path: image
+            displayName: Valkey Image
+            description: Valkey server image for this node (propagated from the cluster).
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+        statusDescriptors:
+          - path: role
+            displayName: Role
+            description: Replication role (primary or replica).
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: ready
+            displayName: Ready
+            description: Whether the node pod is ready.
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:booleanSwitch"
+          - path: podName
+            displayName: Pod Name
+            description: Backing pod name.
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes:Pod"
+  install:
+    strategy: deployment
+    spec:
+      # ServiceAccount the operator runs as (created by OLM from this clusterPermissions
+      # owner). Mirrors deploy/rbac.yaml ServiceAccount valkey-operator.
+      clusterPermissions:
+        - serviceAccountName: valkey-operator
+          rules:
+            - apiGroups:
+                - ""
+              resources:
+                - configmaps
+                - persistentvolumeclaims
+                - secrets
+                - services
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - ""
+              resources:
+                - events
+              verbs:
+                - create
+                - patch
+            - apiGroups:
+                - ""
+              resources:
+                - persistentvolumeclaims/status
+              verbs:
+                - get
+            - apiGroups:
+                - ""
+              resources:
+                - pods
+              verbs:
+                - get
+                - list
+                - watch
+            - apiGroups:
+                - apps
+              resources:
+                - deployments
+                - statefulsets
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - batch
+              resources:
+                - jobs
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - watch
+            - apiGroups:
+                - cert-manager.io
+              resources:
+                - certificates
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - coordination.k8s.io
+              resources:
+                - leases
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - networking.k8s.io
+              resources:
+                - networkpolicies
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - policy
+              resources:
+                - poddisruptionbudgets
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - valkey.percona.com
+              resources:
+                - perconavalkeybackups
+                - perconavalkeyclusters
+                - perconavalkeyrestores
+                - valkeynodes
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - valkey.percona.com
+              resources:
+                - perconavalkeybackups/finalizers
+                - perconavalkeyclusters/finalizers
+                - perconavalkeyrestores/finalizers
+                - valkeynodes/finalizers
+              verbs:
+                - update
+            - apiGroups:
+                - valkey.percona.com
+              resources:
+                - perconavalkeybackups/status
+                - perconavalkeyclusters/status
+                - perconavalkeyrestores/status
+                - valkeynodes/status
+              verbs:
+                - get
+                - patch
+                - update
+      permissions:
+        - serviceAccountName: valkey-operator
+          rules:
+            - apiGroups:
+                - coordination.k8s.io
+              resources:
+                - leases
+              verbs:
+                - create
+                - get
+                - list
+                - watch
+                - update
+                - patch
+                - delete
+            - apiGroups:
+                - ""
+              resources:
+                - events
+              verbs:
+                - create
+                - patch
+            - apiGroups:
+                - ""
+              resources:
+                - configmaps
+              verbs:
+                - create
+                - get
+                - list
+                - watch
+                - update
+                - patch
+                - delete
+      deployments:
+        - name: valkey-operator
+          label:
+            app.kubernetes.io/component: manager
+            app.kubernetes.io/name: percona-valkey-operator
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/component: manager
+                app.kubernetes.io/name: percona-valkey-operator
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/component: manager
+                  app.kubernetes.io/name: percona-valkey-operator
+              spec:
+                serviceAccountName: valkey-operator
+                terminationGracePeriodSeconds: 10
+                securityContext:
+                  runAsNonRoot: true
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: manager
+                    image: percona/valkey-operator:0.1.0
+                    args:
+                      - --leader-elect=true
+                      - --health-probe-bind-address=:8081
+                      - --metrics-bind-address=:8080
+                    env:
+                      - name: POD_NAMESPACE
+                        valueFrom:
+                          fieldRef:
+                            fieldPath: metadata.namespace
+                      - name: WATCH_NAMESPACE
+                        valueFrom:
+                          fieldRef:
+                            fieldPath: metadata.namespace
+                    ports:
+                      - containerPort: 8080
+                        name: metrics
+                        protocol: TCP
+                      - containerPort: 8081
+                        name: health
+                        protocol: TCP
+                    livenessProbe:
+                      httpGet:
+                        path: /healthz
+                        port: 8081
+                      initialDelaySeconds: 15
+                      periodSeconds: 20
+                    readinessProbe:
+                      httpGet:
+                        path: /readyz
+                        port: 8081
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                    resources:
+                      limits:
+                        cpu: 500m
+                        memory: 256Mi
+                      requests:
+                        cpu: 100m
+                        memory: 128Mi
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop:
+                          - ALL

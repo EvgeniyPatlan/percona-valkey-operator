@@ -1,0 +1,18 @@
+apiVersion: v2
+name: valkey-db
+description: A Percona Valkey cluster (PerconaValkeyCluster CR) plus its referenced Secrets (ACL users, TLS) and backup storages.
+type: application
+# appVersion TRACKS pkg/version/version.txt (operator axis). Metadata only.
+appVersion: "0.1.0"
+# version is the chart's OWN semver and the ONLY publish trigger. Bump on ANY change.
+# (docs/architecture/10 §3.1, §6.1 trap 3)
+version: 0.1.0
+kubeVersion: ">=1.30.0-0"
+keywords: [valkey, percona, cache, database, kubernetes]
+home: https://docs.percona.com/percona-operator-for-valkey/
+icon: https://www.percona.com/sites/default/files/favicon.ico
+sources:
+  - https://github.com/percona/percona-valkey-operator
+maintainers:
+  - name: Percona
+    url: https://www.percona.com

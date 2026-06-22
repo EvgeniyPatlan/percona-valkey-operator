@@ -1,0 +1,3 @@
+# valkey-operator-crds has no configurable values — it ships only the CRDs under crds/.
+# This file exists so `helm lint` is fully clean; the chart renders no templated resources.
+{}

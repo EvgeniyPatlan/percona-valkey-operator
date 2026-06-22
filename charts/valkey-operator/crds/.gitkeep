@@ -1,0 +1,4 @@
+# CRD-sync target. `make helm-crds-sync` copies deploy/crd.yaml -> crd.yaml here after every
+# `make generate && make manifests`. The CRD chart files are a COPY of the operator's
+# generated CRDs; the valkey-operator-crd-sync-check CI gate (in percona-helm-charts) fails on
+# divergence. Do NOT hand-edit CRDs here. (docs/architecture/10 §3.3, §6.1 trap 7)

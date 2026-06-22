@@ -1,0 +1,27 @@
+Percona Valkey cluster "{{ include "valkey-db.fullname" . }}" requested
+(chart {{ .Chart.Version }}, operator {{ .Chart.AppVersion }}).
+
+  mode:        {{ .Values.mode }}
+  shards:      {{ .Values.shards }}
+  replicas:    {{ .Values.replicas }}
+  workload:    {{ .Values.workloadType }}
+  persistence: {{ if .Values.persistence.enabled }}{{ .Values.persistence.size }}{{ else }}disabled (cache mode){{ end }}
+  auth:        {{ if .Values.auth.enabled }}enabled (Secret: {{ include "valkey-db.defaultUserSecretName" . }}){{ else }}disabled (no requirepass){{ end }}
+  tls:         {{ if .Values.tls.enabled }}{{ if .Values.tls.certManager.enabled }}cert-manager ({{ .Values.tls.certManager.issuerRef.kind }}/{{ .Values.tls.certManager.issuerRef.name }}){{ else }}secret-ref ({{ .Values.tls.secretName }}){{ end }}{{ else }}off{{ end }}
+  exporter:    {{ if .Values.exporter.enabled }}on (:{{ .Values.exporter.port }}){{ else }}off{{ end }}
+  backup:      {{ if .Values.backup.enabled }}enabled ({{ len .Values.backup.schedule }} schedule(s)){{ else }}disabled{{ end }}
+  expose:      {{ if .Values.expose.enabled }}{{ .Values.expose.type }}{{ else }}in-cluster only{{ end }}
+
+{{- if and .Values.auth.enabled (not .Values.auth.passwordSecret.name) (not .Values.secrets.defaultUserPassword) }}
+
+NOTE: auth is enabled but no password Secret was provided. Create the Secret
+"{{ include "valkey-db.defaultUserSecretName" . }}" with the default-user password before
+the cluster can authenticate, or set secrets.defaultUserPassword for dev/test.
+{{- end }}
+
+Check status:
+  kubectl -n {{ .Release.Namespace }} get perconavalkeycluster {{ include "valkey-db.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} describe perconavalkeycluster {{ include "valkey-db.fullname" . }}
+
+Requires the valkey-operator chart to be installed and watching this namespace.
+Docs: https://docs.percona.com/percona-operator-for-valkey/

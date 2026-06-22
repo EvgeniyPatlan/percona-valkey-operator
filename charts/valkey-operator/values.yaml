@@ -1,0 +1,59 @@
+# valkey-operator chart values. Operator-image pins are a hand-edited copy of
+# e2e-tests/release_versions IMAGE_OPERATOR (third copy — no auto-sync; arch 10 §3.2, §6.1
+# trap 4). After `make release`, set image.tag = the GA operator version.
+
+# Operator image (GA: percona/valkey-operator:<operator-version>).
+image:
+  repository: percona/valkey-operator
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Operator Deployment replica count. Leader election (--leader-elect=true) makes
+# >1 a safe warm-standby; only one replica reconciles at a time.
+replicas: 1
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Watch scope. false => namespaced RBAC (Role/RoleBinding); true => cluster-wide
+# (ClusterRole/ClusterRoleBinding, WATCH_NAMESPACE=""). (arch 02 §7, 07 §6)
+watchAllNamespaces: false
+# Restrict the operator to specific namespaces (ignored when watchAllNamespaces=true).
+watchNamespace: ""
+
+# RBAC generation. create=false lets a cluster admin provide the Role/ClusterRole
+# out-of-band (locked-down GitOps). aggregateClusterRoles adds the admin/edit/view
+# aggregation ClusterRoles so kubectl's built-in roles can manage Valkey CRs.
+rbac:
+  create: true
+  aggregateClusterRoles: true
+
+# CRDs live under crds/ and are installed automatically by Helm 3 on first install
+# (Helm does NOT template or upgrade crds/). Manage them via the standalone
+# valkey-operator-crds chart in GitOps when you need CRD lifecycle control; this
+# flag is retained for parity/documentation. (arch 10 §3)
+installCRDs: true
+
+# Conversion webhook (v1alpha1 <-> v1). caBundle is injected by cert-manager or the
+# operator at runtime; the CRD ships conversion.strategy: Webhook. (arch 10 §4, GO-7.3)
+webhook:
+  enable: true
+
+resources:
+  requests: { cpu: 100m, memory: 64Mi }
+  limits:   { cpu: 500m, memory: 256Mi }
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Pod-level knobs the leg fleshes out into templates.
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+logStructured: true
+logLevel: INFO

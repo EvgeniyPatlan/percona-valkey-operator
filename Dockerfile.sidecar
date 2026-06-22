@@ -1,14 +1,26 @@
-# DB-image sidecar build SKELETON. Compiles the three helper binaries that run
-# inside the Valkey pods (NOT the operator pod): valkey-backup, healthcheck,
-# peer-list. In M0 these are stubs (print "not implemented" and exit non-zero);
-# real logic lands in M4/M5. The final stage layers them onto the Valkey engine
-# base image (set VALKEY_BASE_IMAGE at build time).
-# (docs/architecture/02-repo-layout.md §6)
+# DB-image sidecar / server build. Compiles the three helper binaries that run
+# INSIDE the Valkey pods (NOT the operator pod): valkey-backup, healthcheck,
+# peer-list, and layers them onto the Valkey engine base image. The result is
+# percona/percona-valkey (arch 10 §2: the server image carries the engine + the
+# in-pod sidecars built here). (docs/architecture/02-repo-layout.md §6, 10 §2)
+#
+# The Makefile reuses this one Dockerfile for build-server / build-backup /
+# build-exporter, parameterised by VALKEY_BASE_IMAGE and the -t image name. OQ-1
+# (arch 10 §11): the backup tool ships in this image today; it MAY be folded
+# into / split out of the server image later — keep the binary build stage so
+# either packaging choice is a one-line target change, not a Dockerfile rewrite.
+#
+# Multi-arch: built with `docker buildx --platform linux/amd64,linux/arm64`
+# (default GA matrix; arch 10 §2.1). CGO is off so the cross-compile is pure-Go;
+# BUILDPLATFORM keeps the compile native and Go cross-compiles to TARGET*.
 
 # --- builder ---------------------------------------------------------------
 FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
 WORKDIR /workspace
 
 COPY go.mod go.mod
@@ -18,16 +30,37 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 
+# Static, stripped, cross-compiled builds of the three in-pod sidecars. The same
+# version -X targets as the operator image (GitCommit/BuildTime are silent
+# no-ops until GO-7.2 adds pkg/version/build.go; un-stamped builds degrade to
+# "unknown").
 ENV CGO_ENABLED=0
-RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -o /out/valkey-backup ./cmd/valkey-backup && \
-    GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -o /out/healthcheck   ./cmd/healthcheck && \
-    GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -o /out/peer-list      ./cmd/peer-list
+ENV GO_LDFLAGS="-s -w \
+  -X valkey.percona.com/percona-valkey-operator/pkg/version.gitVersion=${VERSION} \
+  -X valkey.percona.com/percona-valkey-operator/pkg/version.GitCommit=${GIT_COMMIT} \
+  -X valkey.percona.com/percona-valkey-operator/pkg/version.BuildTime=${BUILD_TIME}"
+RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+      go build -trimpath -ldflags "${GO_LDFLAGS}" -o /out/valkey-backup ./cmd/valkey-backup && \
+    GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+      go build -trimpath -ldflags "${GO_LDFLAGS}" -o /out/healthcheck   ./cmd/healthcheck && \
+    GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+      go build -trimpath -ldflags "${GO_LDFLAGS}" -o /out/peer-list     ./cmd/peer-list
 
 # --- runtime ---------------------------------------------------------------
-# Base defaults to a placeholder; the real Valkey engine image is supplied at
-# build time once the DB image exists (M4/M5).
+# Base defaults to a placeholder upstream image; the real Valkey engine image is
+# supplied at build time once the percona/percona-valkey base exists. Set with
+# `make build-server VALKEY_BASE_IMAGE=...`.
 ARG VALKEY_BASE_IMAGE=valkey/valkey:8-alpine
 FROM ${VALKEY_BASE_IMAGE}
+
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="percona-valkey" \
+      org.opencontainers.image.description="Percona Valkey server image with in-pod operator sidecars (valkey-backup, healthcheck, peer-list)." \
+      org.opencontainers.image.vendor="Percona" \
+      org.opencontainers.image.source="https://github.com/percona/percona-valkey-operator" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${VERSION}"
+
 COPY --from=builder /out/valkey-backup /usr/local/bin/valkey-backup
 COPY --from=builder /out/healthcheck   /usr/local/bin/healthcheck
-COPY --from=builder /out/peer-list      /usr/local/bin/peer-list
+COPY --from=builder /out/peer-list     /usr/local/bin/peer-list

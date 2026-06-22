@@ -1,0 +1,89 @@
+# mkdocs-base.yml — the SHARED base that mkdocs.yml inherits (INHERIT:).
+#
+# This base owns nav / plugins / extra (arch 10 §5: "Edit nav and plugin config
+# in mkdocs-base.yml, not mkdocs.yml"). mkdocs.yml is the thin public Material
+# build that points INHERIT here. A separate PDF/print build (if added later)
+# would also inherit this file.
+#
+# Multi-version publishing is via `mike` (extra.version.provider: mike): each
+# release is its own versioned site and mike manages the version dropdown + the
+# `latest` alias (latest only at GA, not for v1alpha1 pre-releases — OQ-5).
+
+site_name: Percona Operator for Valkey
+site_description: Run, scale, secure, back up, and upgrade Valkey on Kubernetes — declaratively.
+site_author: Percona
+site_url: https://docs.percona.com/percona-operator-for-valkey/
+repo_url: https://github.com/percona/percona-valkey-operator
+repo_name: percona/percona-valkey-operator
+edit_uri: edit/main/website/docs/
+copyright: Percona LLC
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.action.edit
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+  # macros: inject variables.yml + the main.py function macros (arch 10 §5).
+  - macros:
+      module_name: main
+      include_yaml:
+        - variables.yml
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+
+extra:
+  # Multi-version dropdown driven by mike (arch 10 §5).
+  version:
+    provider: mike
+    default: latest
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Installation:
+      - Install with Helm: install-helm.md
+      - Install with OLM / OperatorHub: install-olm.md
+  - Configuration: configuration.md
+  - Backup and restore: backup-restore.md
+  - Upgrades: upgrades.md
+  - Versions compatibility: versions.md
+  - Release Notes:
+      # Newest first (arch 10 §5.2 step 3).
+      - 0.1.0: ReleaseNotes/Kubernetes-Operator-for-Valkey-RN0.1.0.md

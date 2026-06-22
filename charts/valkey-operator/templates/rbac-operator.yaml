@@ -1,0 +1,55 @@
+{{- if .Values.rbac.create }}
+{{- if .Values.watchAllNamespaces }}
+# Cluster-wide watch => ClusterRole + ClusterRoleBinding (deploy/cw-rbac.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "valkey-operator.fullname" . }}
+  labels:
+    {{- include "valkey-operator.labels" . | nindent 4 }}
+rules:
+  {{- include "valkey-operator.rules" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "valkey-operator.fullname" . }}
+  labels:
+    {{- include "valkey-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "valkey-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "valkey-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+# Namespaced watch => Role + RoleBinding in the release namespace (deploy/rbac.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "valkey-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "valkey-operator.labels" . | nindent 4 }}
+rules:
+  {{- include "valkey-operator.rules" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "valkey-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "valkey-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "valkey-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "valkey-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

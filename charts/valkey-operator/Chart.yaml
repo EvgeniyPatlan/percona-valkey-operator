@@ -1,0 +1,19 @@
+apiVersion: v2
+name: valkey-operator
+description: Percona Operator for Valkey — installs the operator Deployment, RBAC (namespaced + cluster-wide), ServiceAccount, and CRDs.
+type: application
+# appVersion TRACKS pkg/version/version.txt (operator axis) — metadata only, NOT the publish trigger.
+appVersion: "0.1.0"
+# version is the chart's OWN semver and the ONLY publish trigger (chart-releaser skip_existing).
+# Bump on ANY chart change, including chart-only fixes; may legitimately run ahead of appVersion.
+# (docs/architecture/10 §3.1, §6.1 trap 3)
+version: 0.1.0
+kubeVersion: ">=1.30.0-0"
+keywords: [valkey, percona, operator, cache, kubernetes]
+home: https://docs.percona.com/percona-operator-for-valkey/
+icon: https://www.percona.com/sites/default/files/favicon.ico
+sources:
+  - https://github.com/percona/percona-valkey-operator
+maintainers:
+  - name: Percona
+    url: https://www.percona.com

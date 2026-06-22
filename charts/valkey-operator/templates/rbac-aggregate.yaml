@@ -1,0 +1,51 @@
+{{- if and .Values.rbac.create .Values.rbac.aggregateClusterRoles }}
+# Aggregated ClusterRoles so the built-in admin/edit/view roles gain read/write
+# access to Percona Valkey resources (deploy/rbac.yaml). Cluster-scoped by nature.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: percona-valkey-cluster-admin
+  labels:
+    {{- include "valkey-operator.labels" . | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+rules:
+  - apiGroups: ["valkey.percona.com"]
+    resources: ["perconavalkeyclusters", "perconavalkeybackups", "perconavalkeyrestores"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["valkey.percona.com"]
+    resources: ["perconavalkeyclusters/status", "perconavalkeybackups/status", "perconavalkeyrestores/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["valkey.percona.com"]
+    resources: ["valkeynodes", "valkeynodes/status"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: percona-valkey-cluster-editor
+  labels:
+    {{- include "valkey-operator.labels" . | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+rules:
+  - apiGroups: ["valkey.percona.com"]
+    resources: ["perconavalkeyclusters", "perconavalkeybackups", "perconavalkeyrestores"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["valkey.percona.com"]
+    resources: ["perconavalkeyclusters/status", "perconavalkeybackups/status", "perconavalkeyrestores/status"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: percona-valkey-cluster-viewer
+  labels:
+    {{- include "valkey-operator.labels" . | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules:
+  - apiGroups: ["valkey.percona.com"]
+    resources: ["perconavalkeyclusters", "perconavalkeybackups", "perconavalkeyrestores", "valkeynodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["valkey.percona.com"]
+    resources: ["perconavalkeyclusters/status", "perconavalkeybackups/status", "perconavalkeyrestores/status"]
+    verbs: ["get"]
+{{- end }}

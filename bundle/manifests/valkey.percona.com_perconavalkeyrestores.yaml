@@ -1,0 +1,179 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: perconavalkeyrestores.valkey.percona.com
+spec:
+  group: valkey.percona.com
+  names:
+    kind: PerconaValkeyRestore
+    listKind: PerconaValkeyRestoreList
+    plural: perconavalkeyrestores
+    shortNames:
+    - pvk-restore
+    singular: perconavalkeyrestore
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clusterName
+      name: Cluster
+      type: string
+    - jsonPath: .spec.backupName
+      name: Backup
+      type: string
+    - jsonPath: .status.state
+      name: State
+      type: string
+    - jsonPath: .status.completed
+      name: Completed
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PerconaValkeyRestore is a user-facing restore CR. It references a
+          PerconaValkeyBackup (or inline source) and a target cluster. 03 §8.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PerconaValkeyRestoreSpec references a backup by name XOR an inline backupSource,
+              targeting a cluster. 03 §8.1.
+            properties:
+              backupName:
+                description: |-
+                  backupName is a PerconaValkeyBackup in the same namespace; storage details
+                  are hydrated from it. Set this XOR backupSource. Immutable.
+                type: string
+              backupSource:
+                description: |-
+                  backupSource is an inline source (hydrated from a PerconaValkeyBackup.status)
+                  for restoring from an artifact whose Backup CR no longer exists. Set this
+                  XOR backupName. Immutable.
+                properties:
+                  azure:
+                    description: azure holds resolved Azure storage details copied
+                      from the backup.
+                    properties:
+                      container:
+                        description: container is the Azure Blob container name.
+                        type: string
+                      credentialsSecret:
+                        description: credentialsSecret holds the storage-account credentials.
+                        type: string
+                      prefix:
+                        description: prefix is the blob prefix within the container.
+                        type: string
+                    required:
+                    - container
+                    type: object
+                  destination:
+                    description: destination is the backend-prefixed root (s3://bucket/prefix/<backup>,
+                      ...).
+                    type: string
+                  gcs:
+                    description: gcs holds resolved GCS storage details copied from
+                      the backup.
+                    properties:
+                      bucket:
+                        description: bucket is the GCS bucket name.
+                        type: string
+                      credentialsSecret:
+                        description: credentialsSecret holds the service-account credentials.
+                        type: string
+                      prefix:
+                        description: prefix is the object prefix within the bucket.
+                        type: string
+                    required:
+                    - bucket
+                    type: object
+                  s3:
+                    description: s3 holds resolved S3 storage details copied from
+                      the backup.
+                    properties:
+                      bucket:
+                        description: bucket is the S3 bucket name.
+                        type: string
+                      credentialsSecret:
+                        description: credentialsSecret holds the access credentials.
+                        type: string
+                      endpointUrl:
+                        description: endpointUrl overrides the S3 endpoint (for S3-compatible
+                          stores).
+                        type: string
+                      prefix:
+                        description: prefix is the key prefix within the bucket.
+                        type: string
+                      region:
+                        description: region is the S3 region.
+                        type: string
+                    required:
+                    - bucket
+                    type: object
+                  storageName:
+                    description: storageName is echoed from the original backup.
+                    type: string
+                type: object
+              clusterName:
+                description: clusterName is the target PerconaValkeyCluster. Immutable.
+                type: string
+              strategy:
+                default: NewCluster
+                description: strategy selects the restore mechanism. Immutable.
+                enum:
+                - NewCluster
+                - InPlace
+                type: string
+            required:
+            - clusterName
+            type: object
+            x-kubernetes-validations:
+            - message: set exactly one of backupName or backupSource
+              rule: has(self.backupName) != has(self.backupSource)
+          status:
+            description: PerconaValkeyRestoreStatus is the restore status (03 §8.2).
+            properties:
+              completed:
+                description: completed is the completion timestamp.
+                format: date-time
+                type: string
+              state:
+                description: state is the restore lifecycle state. "" = New.
+                enum:
+                - ""
+                - Starting
+                - Running
+                - Succeeded
+                - Failed
+                - Error
+                type: string
+              stateDescription:
+                description: stateDescription is human-readable detail.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,0 +1,58 @@
+# Scorecard configuration for the Valkey operator OLM bundle (operator-sdk standard).
+# Referenced from bundle/metadata/annotations.yaml via:
+#   operators.operatorframework.io.test.config.v1: tests/scorecard/
+#
+# Run (CI / tool-only — operator-sdk is ABSENT in the authoring environment):
+#   operator-sdk scorecard ./bundle
+#
+# The image tags below track operator-sdk's released scorecard-test image; bump them in
+# lockstep with the operator-sdk version pinned in the Makefile (OPERATOR_SDK_VERSION).
+apiVersion: scorecard.operatorframework.io/v1alpha3
+kind: Configuration
+metadata:
+  name: config
+stages:
+  - parallel: true
+    tests:
+      - image: quay.io/operator-framework/scorecard-test:v1.39.1
+        entrypoint:
+          - scorecard-test
+          - basic-check-spec
+        labels:
+          suite: basic
+          test: basic-check-spec-test
+      - image: quay.io/operator-framework/scorecard-test:v1.39.1
+        entrypoint:
+          - scorecard-test
+          - olm-bundle-validation
+        labels:
+          suite: olm
+          test: olm-bundle-validation-test
+      - image: quay.io/operator-framework/scorecard-test:v1.39.1
+        entrypoint:
+          - scorecard-test
+          - olm-crds-have-validation
+        labels:
+          suite: olm
+          test: olm-crds-have-validation-test
+      - image: quay.io/operator-framework/scorecard-test:v1.39.1
+        entrypoint:
+          - scorecard-test
+          - olm-crds-have-resources
+        labels:
+          suite: olm
+          test: olm-crds-have-resources-test
+      - image: quay.io/operator-framework/scorecard-test:v1.39.1
+        entrypoint:
+          - scorecard-test
+          - olm-spec-descriptors
+        labels:
+          suite: olm
+          test: olm-spec-descriptors-test
+      - image: quay.io/operator-framework/scorecard-test:v1.39.1
+        entrypoint:
+          - scorecard-test
+          - olm-status-descriptors
+        labels:
+          suite: olm
+          test: olm-status-descriptors-test

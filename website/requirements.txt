@@ -1,0 +1,8 @@
+# MkDocs Material site toolchain (k8svalkey-docs). Pinned for reproducible
+# CI builds. `mkdocs` is ABSENT in this dev environment — `mkdocs build
+# --strict` / `mike deploy` run in CI / on a docs machine only (arch 10 §5).
+mkdocs-material==9.5.39
+mkdocs-macros-plugin==1.3.7
+mike==2.1.3
+mkdocs-material-extensions==1.3.1
+pymdown-extensions==10.11

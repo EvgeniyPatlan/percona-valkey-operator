@@ -1,0 +1,168 @@
+apiVersion: valkey.percona.com/v1alpha1
+kind: PerconaValkeyCluster
+metadata:
+  name: {{ include "valkey-db.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "valkey-db.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.crVersion }}
+  crVersion: {{ . | quote }}
+  {{- end }}
+  image: {{ .Values.image | quote }}
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  mode: {{ .Values.mode }}
+  shards: {{ .Values.shards }}
+  replicas: {{ .Values.replicas }}
+  workloadType: {{ .Values.workloadType }}
+  pause: {{ .Values.pause }}
+
+  {{- with .Values.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+
+  {{- if .Values.persistence.enabled }}
+  persistence:
+    size: {{ .Values.persistence.size | quote }}
+    {{- with .Values.persistence.storageClassName }}
+    storageClassName: {{ . | quote }}
+    {{- end }}
+    reclaimPolicy: {{ .Values.persistence.reclaimPolicy }}
+  {{- end }}
+
+  {{- with .Values.config }}
+  config:
+    {{- range $k, $v := . }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
+  {{- end }}
+
+  {{- if .Values.auth.enabled }}
+  auth:
+    enabled: true
+    passwordSecret:
+      name: {{ include "valkey-db.defaultUserSecretName" . | quote }}
+      {{- with .Values.auth.passwordSecret.keys }}
+      keys:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- else }}
+  auth:
+    enabled: false
+  {{- end }}
+
+  {{- if .Values.tls.enabled }}
+  tls:
+    {{- if .Values.tls.certManager.enabled }}
+    certManager:
+      issuerRef:
+        name: {{ .Values.tls.certManager.issuerRef.name | quote }}
+        kind: {{ .Values.tls.certManager.issuerRef.kind }}
+    {{- else if .Values.tls.secretName }}
+    secretName: {{ .Values.tls.secretName | quote }}
+    {{- end }}
+    authClients: {{ .Values.tls.authClients }}
+    {{- with .Values.tls.ciphers }}
+    ciphers: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.tls.cipherSuites }}
+    cipherSuites: {{ . | quote }}
+    {{- end }}
+  {{- end }}
+
+  {{- with .Values.users }}
+  users:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+
+  {{- with .Values.disableCommands }}
+  disableCommands:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+
+  exporter:
+    enabled: {{ .Values.exporter.enabled }}
+    {{- with .Values.exporter.image }}
+    image: {{ . | quote }}
+    {{- end }}
+    port: {{ .Values.exporter.port }}
+    scrapeInterval: {{ .Values.exporter.scrapeInterval | quote }}
+    {{- if .Values.exporter.tls.enabled }}
+    tls:
+      enabled: true
+    {{- end }}
+
+  {{- if .Values.expose.enabled }}
+  expose:
+    type: {{ .Values.expose.type }}
+    perPod: {{ .Values.expose.perPod }}
+    {{- with .Values.expose.loadBalancerSourceRanges }}
+    loadBalancerSourceRanges:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.expose.annotations }}
+    annotations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  {{- end }}
+
+  {{- if .Values.networkPolicy.enabled }}
+  networkPolicy:
+    enabled: true
+    {{- with .Values.networkPolicy.monitoringNamespace }}
+    monitoringNamespace: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.networkPolicy.clientNamespaceSelectors }}
+    clientNamespaceSelectors:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.networkPolicy.clientPodSelectors }}
+    clientPodSelectors:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  {{- end }}
+
+  podDisruptionBudget: {{ .Values.podDisruptionBudget }}
+
+  {{- with .Values.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.affinity }}
+  affinity:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.topologySpreadConstraints }}
+  topologySpreadConstraints:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+
+  {{- if .Values.backup.enabled }}
+  backup:
+    image: {{ .Values.backup.image | quote }}
+    {{- with .Values.backup.storages }}
+    storages:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.backup.schedule }}
+    schedule:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  {{- end }}
+
+  upgradeOptions:
+    apply: {{ .Values.upgradeOptions.apply | quote }}
+    {{- with .Values.upgradeOptions.schedule }}
+    schedule: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.upgradeOptions.versionServiceEndpoint }}
+    versionServiceEndpoint: {{ . | quote }}
+    {{- end }}
