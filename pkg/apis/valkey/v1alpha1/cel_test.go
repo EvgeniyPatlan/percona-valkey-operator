@@ -135,6 +135,45 @@ var _ = ginkgo.Describe("Cluster defaulting via the API server", func() {
 		gomega.Expect(got.Spec.Persistence.ReclaimPolicy).To(gomega.Equal(v1.ReclaimRetain))
 		gomega.Expect(got.Spec.Users[0].Enabled).To(gomega.BeTrue())
 	})
+
+	ginkgo.It("applies the new gap-analysis field marker defaults", func() {
+		c := newCluster("defaults-gap")
+		// auth/exporter.tls are pointer sub-structs: their inner marker defaults
+		// only materialize once the parent object is present, so set them.
+		c.Spec.Auth = &v1.AuthSpec{}
+		c.Spec.TLS = &v1.TLSConfig{SecretName: "tls"}
+		c.Spec.Exporter = v1.ExporterSpec{Enabled: true, TLS: &v1.ExporterTLSSpec{}}
+		gomega.Expect(k8s.Create(ctx, c)).To(gomega.Succeed())
+
+		got := &v1.PerconaValkeyCluster{}
+		gomega.Expect(k8s.Get(ctx, client.ObjectKeyFromObject(c), got)).To(gomega.Succeed())
+		// auth.enabled defaults true (the CRITICAL default-user auth knob is on).
+		gomega.Expect(got.Spec.Auth.Enabled).NotTo(gomega.BeNil())
+		gomega.Expect(*got.Spec.Auth.Enabled).To(gomega.BeTrue())
+		// SA token automount hardened-off by default (per the chart).
+		gomega.Expect(got.Spec.AutomountServiceAccountToken).NotTo(gomega.BeNil())
+		gomega.Expect(*got.Spec.AutomountServiceAccountToken).To(gomega.BeFalse())
+		// TLS mTLS policy defaults to optional.
+		gomega.Expect(got.Spec.TLS.AuthClients).To(gomega.Equal(v1.TLSAuthClientsOptional))
+		// Exporter wiring defaults: port 9121, 20s scrape, metrics TLS off.
+		gomega.Expect(got.Spec.Exporter.Port).NotTo(gomega.BeNil())
+		gomega.Expect(*got.Spec.Exporter.Port).To(gomega.Equal(int32(9121)))
+		gomega.Expect(got.Spec.Exporter.ScrapeInterval).To(gomega.Equal("20s"))
+		gomega.Expect(got.Spec.Exporter.TLS.Enabled).To(gomega.BeFalse())
+	})
+
+	ginkgo.It("keeps the M1 minimal cluster applying with all new fields omitted", func() {
+		c := newCluster("defaults-minimal-invariant")
+		c.Spec = v1.PerconaValkeyClusterSpec{Mode: v1.ModeCluster, Shards: 3}
+		gomega.Expect(k8s.Create(ctx, c)).To(gomega.Succeed())
+		got := &v1.PerconaValkeyCluster{}
+		gomega.Expect(k8s.Get(ctx, client.ObjectKeyFromObject(c), got)).To(gomega.Succeed())
+		// No expose/networkPolicy/auth/tls block was forced on the minimal CR by
+		// the API server (those are nil pointers until the user opts in).
+		gomega.Expect(got.Spec.Expose).To(gomega.BeNil())
+		gomega.Expect(got.Spec.NetworkPolicy).To(gomega.BeNil())
+		gomega.Expect(got.Spec.TLS).To(gomega.BeNil())
+	})
 })
 
 var _ = ginkgo.Describe("Cluster CEL rules", func() {
@@ -354,6 +393,45 @@ var _ = ginkgo.Describe("Cluster CEL rules", func() {
 			gomega.Expect(err).To(gomega.HaveOccurred())
 			gomega.Expect(err.Error()).To(gomega.ContainSubstring("set at most one of tls.secretName or tls.certManager"))
 		})
+	})
+
+	// tls.authClients enum (off|optional|require).
+	ginkgo.Describe("tls.authClients enum", func() {
+		ginkgo.It("accepts require (positive)", func() {
+			c := newCluster("authclients-ok")
+			c.Spec.TLS = &v1.TLSConfig{SecretName: "tls", AuthClients: v1.TLSAuthClientsRequire}
+			gomega.Expect(k8s.Create(ctx, c)).To(gomega.Succeed())
+		})
+		ginkgo.It("rejects an unknown value (negative)", func() {
+			c := newCluster("authclients-bad")
+			c.Spec.TLS = &v1.TLSConfig{SecretName: "tls", AuthClients: v1.TLSAuthClients("bogus")}
+			err := k8s.Create(ctx, c)
+			gomega.Expect(err).To(gomega.HaveOccurred())
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("authClients"))
+		})
+	})
+
+	// expose.type enum (ClusterIP|NodePort|LoadBalancer).
+	ginkgo.Describe("expose.type enum", func() {
+		ginkgo.It("accepts LoadBalancer (positive)", func() {
+			c := newCluster("expose-ok")
+			c.Spec.Expose = &v1.ExposeSpec{Type: "LoadBalancer"}
+			gomega.Expect(k8s.Create(ctx, c)).To(gomega.Succeed())
+		})
+		ginkgo.It("rejects an unknown service type (negative)", func() {
+			c := newCluster("expose-bad")
+			c.Spec.Expose = &v1.ExposeSpec{Type: "Bogus"}
+			err := k8s.Create(ctx, c)
+			gomega.Expect(err).To(gomega.HaveOccurred())
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("type"))
+		})
+	})
+
+	// expose has()-guard: an absent expose block must not be over-required (the
+	// minimal cluster has no expose and still applies).
+	ginkgo.It("permits omitting the expose block entirely (positive)", func() {
+		c := newCluster("expose-omitted")
+		gomega.Expect(k8s.Create(ctx, c)).To(gomega.Succeed())
 	})
 
 	ginkgo.It("status subresource is independent of spec (positive)", func() {

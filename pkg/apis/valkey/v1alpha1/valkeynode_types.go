@@ -90,6 +90,25 @@ type ValkeyNodeSpec struct {
 	// +optional
 	Config map[string]string `json:"config,omitempty"`
 
+	// env is the simple key/value env map propagated from the cluster.
+	// +optional
+	Env map[string]string `json:"env,omitempty"`
+	// extraEnvVars are the full corev1.EnvVar entries propagated from the cluster.
+	// +optional
+	ExtraEnvVars []corev1.EnvVar `json:"extraEnvVars,omitempty"`
+	// serviceAccountName is propagated from the cluster.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+	// automountServiceAccountToken is propagated from the cluster (default false).
+	// +optional
+	AutomountServiceAccountToken *bool `json:"automountServiceAccountToken,omitempty"`
+	// podSecurityContext is propagated from the cluster.
+	// +optional
+	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
+	// containerSecurityContext is propagated from the cluster.
+	// +optional
+	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
+
 	// serverConfigMapName is the name of the rendered valkey-<cluster> ConfigMap
 	// (scripts + config). Parent writes; node reads.
 	// +optional

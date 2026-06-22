@@ -21,6 +21,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -118,6 +119,53 @@ func assertNoError(t *testing.T, _ *v1.PerconaValkeyCluster, err error) {
 	}
 }
 
+func assertAuthDefaulted(t *testing.T, cr *v1.PerconaValkeyCluster, _ error) {
+	if cr.Spec.Auth == nil {
+		t.Fatal("auth block not materialized")
+	}
+	if cr.Spec.Auth.Enabled == nil || !*cr.Spec.Auth.Enabled {
+		t.Error("auth.enabled should default to true")
+	}
+	if cr.Spec.Auth.PasswordSecret.Name != "mycluster-users" {
+		t.Errorf("auth.passwordSecret.name = %q, want mycluster-users", cr.Spec.Auth.PasswordSecret.Name)
+	}
+}
+
+func assertAuthSecretPreserved(t *testing.T, cr *v1.PerconaValkeyCluster, _ error) {
+	if cr.Spec.Auth == nil || cr.Spec.Auth.PasswordSecret.Name != "byo-secret" {
+		t.Errorf("auth.passwordSecret.name should be preserved as byo-secret, got %+v", cr.Spec.Auth)
+	}
+}
+
+func assertAuthDisabledNoSecret(t *testing.T, cr *v1.PerconaValkeyCluster, _ error) {
+	if cr.Spec.Auth == nil || cr.Spec.Auth.Enabled == nil || *cr.Spec.Auth.Enabled {
+		t.Fatalf("auth.enabled should stay false, got %+v", cr.Spec.Auth)
+	}
+	if cr.Spec.Auth.PasswordSecret.Name != "" {
+		t.Errorf("auth disabled: passwordSecret.name should not be derived, got %q", cr.Spec.Auth.PasswordSecret.Name)
+	}
+}
+
+func assertDisableCommandsDefaulted(t *testing.T, cr *v1.PerconaValkeyCluster, _ error) {
+	want := []string{"FLUSHALL", "FLUSHDB"}
+	if !reflect.DeepEqual(cr.Spec.DisableCommands, want) {
+		t.Errorf("disableCommands = %v, want %v", cr.Spec.DisableCommands, want)
+	}
+}
+
+func assertDisableCommandsPreserved(t *testing.T, cr *v1.PerconaValkeyCluster, _ error) {
+	if !reflect.DeepEqual(cr.Spec.DisableCommands, []string{"KEYS"}) {
+		t.Errorf("explicit disableCommands overwritten: %v", cr.Spec.DisableCommands)
+	}
+}
+
+func assertDisableCommandsEmptyPreserved(t *testing.T, cr *v1.PerconaValkeyCluster, _ error) {
+	// An explicit empty slice means "disable nothing" and must survive defaulting.
+	if cr.Spec.DisableCommands == nil || len(cr.Spec.DisableCommands) != 0 {
+		t.Errorf("explicit empty disableCommands should be preserved (disable nothing), got %v", cr.Spec.DisableCommands)
+	}
+}
+
 func assertUnknownStorageNameRejected(t *testing.T, _ *v1.PerconaValkeyCluster, err error) {
 	if err == nil {
 		t.Fatal("expected error for unknown storageName")
@@ -210,6 +258,44 @@ func TestCheckNSetDefaults(t *testing.T) {
 			}),
 			assert: assertUnknownStorageNameRejected,
 		},
+		{
+			name:   "auth block materialized enabled with derived <cluster>-users secret",
+			cr:     clusterWith(nil),
+			assert: assertAuthDefaulted,
+		},
+		{
+			name: "auth passwordSecret name preserved when set",
+			cr: clusterWith(func(c *v1.PerconaValkeyCluster) {
+				c.Spec.Auth = &v1.AuthSpec{Enabled: ptr(true), PasswordSecret: v1.UserPasswordSecret{Name: "byo-secret"}}
+			}),
+			assert: assertAuthSecretPreserved,
+		},
+		{
+			name: "auth disabled leaves passwordSecret undefaulted",
+			cr: clusterWith(func(c *v1.PerconaValkeyCluster) {
+				c.Spec.Auth = &v1.AuthSpec{Enabled: ptr(false)}
+			}),
+			assert: assertAuthDisabledNoSecret,
+		},
+		{
+			name:   "disableCommands defaults to FLUSHALL/FLUSHDB",
+			cr:     clusterWith(nil),
+			assert: assertDisableCommandsDefaulted,
+		},
+		{
+			name: "explicit disableCommands preserved",
+			cr: clusterWith(func(c *v1.PerconaValkeyCluster) {
+				c.Spec.DisableCommands = []string{"KEYS"}
+			}),
+			assert: assertDisableCommandsPreserved,
+		},
+		{
+			name: "explicit empty disableCommands preserved (disable nothing)",
+			cr: clusterWith(func(c *v1.PerconaValkeyCluster) {
+				c.Spec.DisableCommands = []string{}
+			}),
+			assert: assertDisableCommandsEmptyPreserved,
+		},
 	}
 
 	for _, tc := range tests {
@@ -237,7 +323,9 @@ func TestCheckNSetDefaults_Idempotent(t *testing.T) {
 		cr.Spec.Shards != first.Spec.Shards ||
 		cr.Spec.Image != first.Spec.Image ||
 		cr.Spec.Backup.Image != first.Spec.Backup.Image ||
-		cr.Spec.Users[0].PasswordSecret.Name != first.Spec.Users[0].PasswordSecret.Name {
+		cr.Spec.Users[0].PasswordSecret.Name != first.Spec.Users[0].PasswordSecret.Name ||
+		cr.Spec.Auth.PasswordSecret.Name != first.Spec.Auth.PasswordSecret.Name ||
+		!reflect.DeepEqual(cr.Spec.DisableCommands, first.Spec.DisableCommands) {
 		t.Error("CheckNSetDefaults is not idempotent: second call changed the spec")
 	}
 }

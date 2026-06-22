@@ -28,6 +28,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -272,6 +273,135 @@ var _ = ginkgo.Describe("PerconaValkeyCluster NetworkPolicy (M5 GO-5.9)", func()
 			types.NamespacedName{Name: "valkey-np6-netpol", Namespace: ns}, np)).To(gomega.Succeed())
 		gomega.Expect(np.Labels).To(gomega.HaveKeyWithValue("app.kubernetes.io/managed-by", "percona-valkey-operator"))
 		gomega.Expect(np.Labels).To(gomega.HaveKeyWithValue("valkey.percona.com/component", "valkey"))
+	})
+
+	ginkgo.It("creates the policy from spec.networkPolicy.enabled=true (first-class field, no annotation)", func() {
+		cluster := makeCluster("np7", ns, 1)
+		enabled := true
+		cluster.Spec.NetworkPolicy = &valkeyv1alpha1.NetworkPolicySpec{Enabled: &enabled}
+		gomega.Expect(k8sClient.Create(testCtx, cluster)).To(gomega.Succeed())
+		key := client.ObjectKeyFromObject(cluster)
+
+		reconcileN(key, 2)
+		np, ok := getNetpol("np7", ns)
+		gomega.Expect(ok).To(gomega.BeTrue(), "spec.networkPolicy.enabled=true must create the policy")
+		gomega.Expect(np.Spec.Ingress).To(gomega.HaveLen(5))
+		// Default client-ingress: same-namespace pods (empty pod selector, no ns selector).
+		gomega.Expect(np.Spec.Ingress[0].From).To(gomega.HaveLen(1))
+		gomega.Expect(np.Spec.Ingress[0].From[0].PodSelector).NotTo(gomega.BeNil())
+		gomega.Expect(np.Spec.Ingress[0].From[0].NamespaceSelector).To(gomega.BeNil())
+	})
+
+	ginkgo.It("does not create the policy when spec.networkPolicy.enabled=false (overrides the annotation)", func() {
+		cluster := makeCluster("np8", ns, 1)
+		// Annotation says enabled, but the first-class field explicitly disables.
+		cluster.Annotations = map[string]string{perconavalkeycluster.AnnNetworkPolicyEnabled: "true"}
+		disabled := false
+		cluster.Spec.NetworkPolicy = &valkeyv1alpha1.NetworkPolicySpec{Enabled: &disabled}
+		gomega.Expect(k8sClient.Create(testCtx, cluster)).To(gomega.Succeed())
+		key := client.ObjectKeyFromObject(cluster)
+
+		reconcileN(key, 3)
+		_, ok := getNetpol("np8", ns)
+		gomega.Expect(ok).To(gomega.BeFalse(), "explicit spec.networkPolicy.enabled=false must win over the annotation")
+	})
+
+	ginkgo.It("scopes client-ingress to spec.networkPolicy.clientNamespaceSelectors", func() {
+		cluster := makeCluster("np9", ns, 1)
+		enabled := true
+		cluster.Spec.NetworkPolicy = &valkeyv1alpha1.NetworkPolicySpec{
+			Enabled: &enabled,
+			ClientNamespaceSelectors: []metav1.LabelSelector{
+				{MatchLabels: map[string]string{"team": "payments"}},
+			},
+		}
+		gomega.Expect(k8sClient.Create(testCtx, cluster)).To(gomega.Succeed())
+		key := client.ObjectKeyFromObject(cluster)
+
+		reconcileN(key, 2)
+		np, ok := getNetpol("np9", ns)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		clientRule := np.Spec.Ingress[0]
+		gomega.Expect(clientRule.From).To(gomega.HaveLen(1))
+		gomega.Expect(clientRule.From[0].NamespaceSelector).NotTo(gomega.BeNil())
+		gomega.Expect(clientRule.From[0].NamespaceSelector.MatchLabels).To(gomega.HaveKeyWithValue("team", "payments"))
+		gomega.Expect(clientRule.From[0].PodSelector).To(gomega.BeNil())
+		gomega.Expect(portMatches(clientRule.Ports, corev1.ProtocolTCP, 6379)).To(gomega.BeTrue())
+	})
+
+	ginkgo.It("scopes client-ingress to spec.networkPolicy.clientPodSelectors", func() {
+		cluster := makeCluster("np10", ns, 1)
+		enabled := true
+		cluster.Spec.NetworkPolicy = &valkeyv1alpha1.NetworkPolicySpec{
+			Enabled: &enabled,
+			ClientPodSelectors: []metav1.LabelSelector{
+				{MatchLabels: map[string]string{"app": "api"}},
+				{MatchLabels: map[string]string{"app": "worker"}},
+			},
+		}
+		gomega.Expect(k8sClient.Create(testCtx, cluster)).To(gomega.Succeed())
+		key := client.ObjectKeyFromObject(cluster)
+
+		reconcileN(key, 2)
+		np, ok := getNetpol("np10", ns)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		clientRule := np.Spec.Ingress[0]
+		// One peer per pod selector, namespace defaults to the policy's own ns.
+		gomega.Expect(clientRule.From).To(gomega.HaveLen(2))
+		for _, peer := range clientRule.From {
+			gomega.Expect(peer.PodSelector).NotTo(gomega.BeNil())
+			gomega.Expect(peer.NamespaceSelector).To(gomega.BeNil())
+		}
+		gomega.Expect(clientRule.From[0].PodSelector.MatchLabels).To(gomega.HaveKeyWithValue("app", "api"))
+		gomega.Expect(clientRule.From[1].PodSelector.MatchLabels).To(gomega.HaveKeyWithValue("app", "worker"))
+	})
+
+	ginkgo.It("cross-products client namespace x pod selectors (AND within each peer)", func() {
+		cluster := makeCluster("np11", ns, 1)
+		enabled := true
+		cluster.Spec.NetworkPolicy = &valkeyv1alpha1.NetworkPolicySpec{
+			Enabled: &enabled,
+			ClientNamespaceSelectors: []metav1.LabelSelector{
+				{MatchLabels: map[string]string{"env": "prod"}},
+				{MatchLabels: map[string]string{"env": "staging"}},
+			},
+			ClientPodSelectors: []metav1.LabelSelector{
+				{MatchLabels: map[string]string{"app": "api"}},
+			},
+		}
+		gomega.Expect(k8sClient.Create(testCtx, cluster)).To(gomega.Succeed())
+		key := client.ObjectKeyFromObject(cluster)
+
+		reconcileN(key, 2)
+		np, ok := getNetpol("np11", ns)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		clientRule := np.Spec.Ingress[0]
+		// 2 namespaces x 1 pod selector = 2 peers, each carrying BOTH selectors.
+		gomega.Expect(clientRule.From).To(gomega.HaveLen(2))
+		for _, peer := range clientRule.From {
+			gomega.Expect(peer.NamespaceSelector).NotTo(gomega.BeNil())
+			gomega.Expect(peer.PodSelector).NotTo(gomega.BeNil())
+			gomega.Expect(peer.PodSelector.MatchLabels).To(gomega.HaveKeyWithValue("app", "api"))
+		}
+	})
+
+	ginkgo.It("honours spec.networkPolicy.monitoringNamespace on the metrics rule", func() {
+		cluster := makeCluster("np12", ns, 1)
+		enabled := true
+		cluster.Spec.NetworkPolicy = &valkeyv1alpha1.NetworkPolicySpec{
+			Enabled:             &enabled,
+			MonitoringNamespace: "monitoring-prod",
+		}
+		gomega.Expect(k8sClient.Create(testCtx, cluster)).To(gomega.Succeed())
+		key := client.ObjectKeyFromObject(cluster)
+
+		reconcileN(key, 2)
+		np, ok := getNetpol("np12", ns)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(np.Spec.Ingress[4].From[0].NamespaceSelector.MatchLabels).To(gomega.HaveKeyWithValue(
+			"kubernetes.io/metadata.name", "monitoring-prod"))
+		gomega.Expect(np.Spec.Ingress[4].From[0].PodSelector.MatchLabels).To(gomega.HaveKeyWithValue(
+			"app.kubernetes.io/name", "prometheus"))
 	})
 })
 

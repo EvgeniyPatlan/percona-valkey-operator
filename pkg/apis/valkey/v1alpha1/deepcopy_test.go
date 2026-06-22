@@ -68,8 +68,41 @@ func fullCluster() *v1.PerconaValkeyCluster {
 				Channels:       &v1.UserChannels{Patterns: []string{"news:*"}},
 				Permissions:    "+ping",
 			}},
-			TLS:                 &v1.TLSConfig{CertManager: &v1.CertManagerSpec{IssuerRef: v1.IssuerRef{Name: "ca", Kind: v1.IssuerKindClusterIssuer}}},
-			Exporter:            v1.ExporterSpec{Enabled: true, Image: "exp:1", Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}}},
+			Auth: &v1.AuthSpec{Enabled: ptrB(true), PasswordSecret: v1.UserPasswordSecret{Name: "c-users", Keys: []string{"password", "password-prev"}}},
+			TLS: &v1.TLSConfig{
+				CertManager:    &v1.CertManagerSpec{IssuerRef: v1.IssuerRef{Name: "ca", Kind: v1.IssuerKindClusterIssuer}},
+				AuthClients:    v1.TLSAuthClientsRequire,
+				Ciphers:        "HIGH:!aNULL",
+				CipherSuites:   "TLS_AES_256_GCM_SHA384",
+				DHParamsSecret: &v1.SecretRef{Name: "dh", Key: "dh-params.pem"},
+			},
+			DisableCommands: []string{"FLUSHALL", "FLUSHDB"},
+			Expose: &v1.ExposeSpec{
+				Type:                     corev1.ServiceTypeLoadBalancer,
+				LoadBalancerSourceRanges: []string{"10.0.0.0/8"},
+				Annotations:              map[string]string{"cloud": "lb"},
+				PerPod:                   true,
+			},
+			NetworkPolicy: &v1.NetworkPolicySpec{
+				Enabled:                  ptrB(true),
+				ClientNamespaceSelectors: []metav1.LabelSelector{{MatchLabels: map[string]string{"team": "app"}}},
+				ClientPodSelectors:       []metav1.LabelSelector{{MatchLabels: map[string]string{"app": "web"}}},
+				MonitoringNamespace:      "monitoring",
+			},
+			Env:                          map[string]string{"TZ": "UTC"},
+			ExtraEnvVars:                 []corev1.EnvVar{{Name: "X", Value: "y"}},
+			ServiceAccountName:           "my-sa",
+			AutomountServiceAccountToken: ptrB(false),
+			PodSecurityContext:           &corev1.PodSecurityContext{RunAsNonRoot: ptrB(true)},
+			ContainerSecurityContext:     &corev1.SecurityContext{ReadOnlyRootFilesystem: ptrB(true)},
+			Exporter: v1.ExporterSpec{
+				Enabled:        true,
+				Image:          "exp:1",
+				Resources:      corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}},
+				Port:           ptr32(9121),
+				ScrapeInterval: "20s",
+				TLS:            &v1.ExporterTLSSpec{Enabled: true},
+			},
 			PodDisruptionBudget: v1.PDBManaged,
 			Backup: v1.BackupSpec{
 				Image:              "repo/backup:1",
@@ -94,22 +127,28 @@ func fullNode() *v1.ValkeyNode {
 	sc := "fast"
 	return &v1.ValkeyNode{
 		Spec: v1.ValkeyNodeSpec{
-			Image:                     "repo/valkey:1",
-			ImagePullSecrets:          []corev1.LocalObjectReference{{Name: "reg"}},
-			WorkloadType:              v1.WorkloadStatefulSet,
-			Persistence:               &v1.PersistenceSpec{Size: resource.MustParse("10Gi"), StorageClassName: &sc},
-			Resources:                 corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}},
-			NodeSelector:              map[string]string{"disk": "ssd"},
-			Affinity:                  &corev1.Affinity{},
-			Tolerations:               []corev1.Toleration{{Key: "k"}},
-			TopologySpreadConstraints: []corev1.TopologySpreadConstraint{{MaxSkew: 1}},
-			Exporter:                  v1.ExporterSpec{Enabled: true},
-			Containers:                []corev1.Container{{Name: "server"}},
-			TLS:                       &v1.TLSConfig{SecretName: "tls"},
-			Config:                    map[string]string{"maxmemory": "1gb"},
-			ServerConfigMapName:       "valkey-c",
-			ServerConfigHash:          "deadbeef",
-			ACLSecretName:             "internal-c-acl",
+			Image:                        "repo/valkey:1",
+			ImagePullSecrets:             []corev1.LocalObjectReference{{Name: "reg"}},
+			WorkloadType:                 v1.WorkloadStatefulSet,
+			Persistence:                  &v1.PersistenceSpec{Size: resource.MustParse("10Gi"), StorageClassName: &sc},
+			Resources:                    corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}},
+			NodeSelector:                 map[string]string{"disk": "ssd"},
+			Affinity:                     &corev1.Affinity{},
+			Tolerations:                  []corev1.Toleration{{Key: "k"}},
+			TopologySpreadConstraints:    []corev1.TopologySpreadConstraint{{MaxSkew: 1}},
+			Exporter:                     v1.ExporterSpec{Enabled: true, Port: ptr32(9121), TLS: &v1.ExporterTLSSpec{Enabled: true}},
+			Containers:                   []corev1.Container{{Name: "server"}},
+			TLS:                          &v1.TLSConfig{SecretName: "tls", DHParamsSecret: &v1.SecretRef{Name: "dh"}},
+			Config:                       map[string]string{"maxmemory": "1gb"},
+			Env:                          map[string]string{"TZ": "UTC"},
+			ExtraEnvVars:                 []corev1.EnvVar{{Name: "X", Value: "y"}},
+			ServiceAccountName:           "my-sa",
+			AutomountServiceAccountToken: ptrB(false),
+			PodSecurityContext:           &corev1.PodSecurityContext{RunAsNonRoot: ptrB(true)},
+			ContainerSecurityContext:     &corev1.SecurityContext{ReadOnlyRootFilesystem: ptrB(true)},
+			ServerConfigMapName:          "valkey-c",
+			ServerConfigHash:             "deadbeef",
+			ACLSecretName:                "internal-c-acl",
 		},
 		Status: v1.ValkeyNodeStatus{
 			ObservedGeneration: 1, Ready: true, PodName: "p", PodIP: "1.2.3.4", Role: v1.NodeRolePrimary,
@@ -153,6 +192,8 @@ func fullRestore() *v1.PerconaValkeyRestore {
 }
 
 func ptrB(v bool) *bool { return &v }
+
+func ptr32(v int32) *int32 { return &v }
 
 // TestDeepCopyExhaustive exercises the generated DeepCopy/DeepCopyInto for every
 // kind and List type with all optional fields set, asserting the copy is equal
@@ -214,8 +255,16 @@ func TestSubStructDeepCopy(t *testing.T) {
 	assertCopy("CertManagerSpec", tls.CertManager, tls.CertManager.DeepCopy())
 	ir := &tls.CertManager.IssuerRef
 	assertCopy("IssuerRef", ir, ir.DeepCopy())
+	assertCopy("SecretRef", tls.DHParamsSecret, tls.DHParamsSecret.DeepCopy())
 	exp := cl.Spec.Exporter
 	assertCopy("ExporterSpec", &exp, exp.DeepCopy())
+	assertCopy("ExporterTLSSpec", exp.TLS, exp.TLS.DeepCopy())
+	auth := cl.Spec.Auth
+	assertCopy("AuthSpec", auth, auth.DeepCopy())
+	expose := cl.Spec.Expose
+	assertCopy("ExposeSpec", expose, expose.DeepCopy())
+	np := cl.Spec.NetworkPolicy
+	assertCopy("NetworkPolicySpec", np, np.DeepCopy())
 	u := &cl.Spec.Users[0]
 	assertCopy("UserACLSpec", u, u.DeepCopy())
 	assertCopy("UserPasswordSecret", &u.PasswordSecret, u.PasswordSecret.DeepCopy())

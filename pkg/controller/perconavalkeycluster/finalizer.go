@@ -44,7 +44,7 @@ import (
 // Patching only the finalizers leaves the stored spec byte-for-byte untouched and
 // also avoids whole-object update conflicts (04 §9).
 func (r *Reconciler) ensureFinalizers(ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster) error {
-	patch := client.MergeFrom(cluster.DeepCopy())
+	base := cluster.DeepCopy()
 	added := controllerutil.AddFinalizer(cluster, naming.FinalizerDeletePodsInOrder)
 	if controllerutil.AddFinalizer(cluster, naming.FinalizerDeleteSSL) {
 		added = true
@@ -52,9 +52,24 @@ func (r *Reconciler) ensureFinalizers(ctx context.Context, cluster *valkeyv1alph
 	if !added {
 		return nil
 	}
-	if err := r.Patch(ctx, cluster, patch); err != nil {
+	// Patch a COPY (not the live object): controller-runtime writes the PATCH
+	// response back into whatever object it is handed, which would replace the
+	// in-memory cluster's spec with the server's PERSISTED spec. The new security
+	// fields (spec.auth, spec.disableCommands) are materialized only by the Go-side
+	// CheckNSetDefaults (no CRD defaults) and carry `omitempty`, so the persisted
+	// spec drops them back to nil — the charter's omitempty+defaults round-trip
+	// footgun. Patching a copy persists the metadata-only finalizer change while
+	// leaving the already-defaulted in-memory cluster (which AddFinalizer above also
+	// updated with the finalizers) intact for the rest of the pipeline, so the
+	// config render + roll hash stay deterministic across reconciles.
+	patchTarget := cluster.DeepCopy()
+	if err := r.Patch(ctx, patchTarget, client.MergeFrom(base)); err != nil {
 		return fmt.Errorf("add cluster finalizers: %w", err)
 	}
+	// Mirror the server's resourceVersion (advanced by the metadata PATCH) onto the
+	// in-memory object so a later status writeback patches the current revision
+	// without a stale-conflict, without copying back the omitempty-stripped spec.
+	cluster.ResourceVersion = patchTarget.ResourceVersion
 	return nil
 }
 

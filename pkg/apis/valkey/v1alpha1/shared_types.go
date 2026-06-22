@@ -98,6 +98,25 @@ type CertManagerSpec struct {
 	IssuerRef IssuerRef `json:"issuerRef"`
 }
 
+// TLSAuthClients controls the client-certificate policy (mTLS) the server
+// enforces (07 §3.2). It maps to the Valkey tls-auth-clients directive:
+// optional => tls-auth-clients optional (default; encryption + server auth, no
+// client cert required), require => tls-auth-clients yes (mutual TLS), off =>
+// tls-auth-clients no (no client-cert validation). Surfaced as a single enum so
+// the policy cannot be partially configured.
+// +kubebuilder:validation:Enum=off;optional;require
+type TLSAuthClients string
+
+const (
+	// TLSAuthClientsOff disables client-certificate validation (tls-auth-clients no).
+	TLSAuthClientsOff TLSAuthClients = "off"
+	// TLSAuthClientsOptional validates a client cert when presented but does not
+	// require one (tls-auth-clients optional; the upstream/operator default).
+	TLSAuthClientsOptional TLSAuthClients = "optional"
+	// TLSAuthClientsRequire enforces mutual TLS (tls-auth-clients yes).
+	TLSAuthClientsRequire TLSAuthClients = "require"
+)
+
 // TLSConfig is the TLS-in-transit configuration for the client port and cluster
 // bus. Exactly one of secretName / certManager may be set; neither => TLS off
 // (the parent *TLSConfig pointer being nil). When present the operator renders
@@ -115,6 +134,40 @@ type TLSConfig struct {
 	// names; cert-manager populates the TLS Secret (auto-rotation).
 	// +optional
 	CertManager *CertManagerSpec `json:"certManager,omitempty"`
+
+	// authClients is the client-certificate (mTLS) policy. Defaults to optional
+	// (encryption + server auth, ACL password auth over the channel). Set to
+	// require for mutual TLS in zero-trust environments, or off to skip client
+	// cert validation entirely (07 §3.2). Renders tls-auth-clients.
+	// +kubebuilder:default=optional
+	// +optional
+	AuthClients TLSAuthClients `json:"authClients,omitempty"`
+	// ciphers restricts the TLSv1.2-and-below cipher list (OpenSSL cipher-string
+	// syntax). Renders tls-ciphers. Empty => server default. FIPS/compliance knob.
+	// +optional
+	Ciphers string `json:"ciphers,omitempty"`
+	// cipherSuites restricts the TLSv1.3 cipher suites (OpenSSL ciphersuites
+	// syntax). Renders tls-ciphersuites. Empty => server default.
+	// +optional
+	CipherSuites string `json:"cipherSuites,omitempty"`
+	// dhParamsSecret references a Secret holding Diffie-Hellman parameters
+	// (dh-params.pem) mounted and wired to tls-dh-params-file. Empty => server
+	// default (no explicit DH params). Secret-ref only — never inline (ADR-008).
+	// +optional
+	DHParamsSecret *SecretRef `json:"dhParamsSecret,omitempty"`
+}
+
+// SecretRef references a single key within a Secret. Used for non-password TLS
+// material (e.g. dhParamsSecret) where the UserPasswordSecret multi-key rotation
+// shape does not apply. Secret-ref only (ADR-008): the operator reads the keyed
+// value; the material is never inlined into the CR.
+type SecretRef struct {
+	// name is the Secret holding the referenced material.
+	Name string `json:"name"`
+	// key is the Secret key to read. Defaults to dh-params.pem when empty for a
+	// dhParamsSecret reference (resolved by the consuming controller).
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 // ----------------------------------------------------------------------------
@@ -134,6 +187,34 @@ type ExporterSpec struct {
 	// resources are the exporter container resource requests/limits.
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+	// port is the exporter scrape port (08 §3). The named "metrics" container
+	// port and the PodMonitor/ServiceMonitor target. Defaults to 9121 (Charter).
+	// +kubebuilder:default=9121
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port *int32 `json:"port,omitempty"`
+	// scrapeInterval is the recommended scrape cadence templated into the
+	// PodMonitor/ServiceMonitor (08 §2.4). Defaults to 20s; avoid sub-10s on large
+	// keyspaces (INFO competes with client traffic on the single thread).
+	// +kubebuilder:default="20s"
+	// +optional
+	ScrapeInterval string `json:"scrapeInterval,omitempty"`
+	// tls enables HTTPS scraping: the exporter serves metrics over TLS using the
+	// cluster's cert family and the PodMonitor switches to scheme https (08 §3.3).
+	// +optional
+	TLS *ExporterTLSSpec `json:"tls,omitempty"`
+}
+
+// ExporterTLSSpec toggles metrics-over-TLS for the exporter (08 §3.3). When
+// enabled the exporter serves /metrics over HTTPS (reusing the cluster TLS cert
+// family) and the generated PodMonitor/ServiceMonitor scrapes with scheme https
+// and the matching tlsConfig.
+type ExporterTLSSpec struct {
+	// enabled serves the exporter metrics endpoint over TLS.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // ----------------------------------------------------------------------------
@@ -224,6 +305,90 @@ type UserACLSpec struct {
 	// permissions is raw ACL appended verbatim after the generated rules.
 	// +optional
 	Permissions string `json:"permissions,omitempty"`
+}
+
+// ----------------------------------------------------------------------------
+// Default-user authentication (07 §3 / gap §2.3) — SECURITY
+// ----------------------------------------------------------------------------
+
+// AuthSpec configures the Valkey default user's password (requirepass). This is
+// distinct from the ACL users[] list: those model named, non-default ACL users
+// (plus the reserved _operator/_exporter/_backup system users), whereas this
+// block governs ONLY the built-in "default" user / requirepass — the chart's
+// primary auth knob. All password material is Secret-ref only (never inline,
+// ADR-008).
+type AuthSpec struct {
+	// enabled toggles default-user password auth (requirepass). When true the
+	// default user requires the password from passwordSecret; when false the
+	// default user is left passwordless (nopass). Defaults to true.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+	// passwordSecret references the Secret holding the default user's password(s).
+	// Multiple keys enable Valkey multi-password rotation (live ACL SETUSER, no
+	// pod roll). Defaults to the <cluster>-users Secret (derived in
+	// CheckNSetDefaults) when enabled and a name is not given.
+	// +optional
+	PasswordSecret UserPasswordSecret `json:"passwordSecret,omitempty"`
+}
+
+// ----------------------------------------------------------------------------
+// Service exposure / external access (gap §2.12) — per-pod for cluster mode
+// ----------------------------------------------------------------------------
+
+// ExposeSpec controls how the cluster is reachable from outside the operator's
+// headless Service. When type is NodePort/LoadBalancer the operator provisions
+// the external Service(s); perPod creates one external Service per ValkeyNode
+// plus the cluster-announce-ip wiring required for cluster-mode clients to
+// follow MOVED/ASK redirects to per-pod external addresses.
+type ExposeSpec struct {
+	// type is the client Service type. ClusterIP (default) keeps access in-cluster;
+	// NodePort/LoadBalancer expose the cluster externally.
+	// +kubebuilder:default=ClusterIP
+	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
+	// +optional
+	Type corev1.ServiceType `json:"type,omitempty"`
+	// loadBalancerSourceRanges restricts client CIDRs when type is LoadBalancer.
+	// +optional
+	LoadBalancerSourceRanges []string `json:"loadBalancerSourceRanges,omitempty"`
+	// annotations are added to the generated external Service(s) (e.g. cloud LB
+	// controller hints).
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+	// perPod creates an external Service per ValkeyNode and sets cluster-announce-ip
+	// so cluster-mode clients can reach individual shards directly (the operator
+	// performs the announce-IP discovery the chart's init container did).
+	// +optional
+	PerPod bool `json:"perPod,omitempty"`
+}
+
+// ----------------------------------------------------------------------------
+// NetworkPolicy generation (07 §7 / gap §2.14) — SECURITY
+// ----------------------------------------------------------------------------
+
+// NetworkPolicySpec toggles and customizes the operator-managed default-deny
+// perimeter (07 §7). It replaces the M5 interim annotation gate
+// (valkey.percona.com/network-policy + ...-monitoring-namespace). enabled is a
+// pointer so absence is distinct from explicit false (the operator's default is
+// off unless explicitly enabled, matching the opt-in interim behaviour).
+type NetworkPolicySpec struct {
+	// enabled turns on the operator-managed default-deny NetworkPolicy plus the
+	// required data-plane/metrics flows. nil/false => no policy is created
+	// (opt-in; recommended true in production, 07 §7).
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+	// clientNamespaceSelectors selects namespaces whose pods may reach the client
+	// port (6379). Empty => same-namespace pods only (the interim default).
+	// +optional
+	ClientNamespaceSelectors []metav1.LabelSelector `json:"clientNamespaceSelectors,omitempty"`
+	// clientPodSelectors selects pods (in allowed namespaces) that may reach the
+	// client port (6379). Empty => any pod in the allowed namespaces.
+	// +optional
+	ClientPodSelectors []metav1.LabelSelector `json:"clientPodSelectors,omitempty"`
+	// monitoringNamespace is the namespace whose Prometheus pods may scrape the
+	// exporter (9121). Empty => the cluster's own namespace (08 §3.4).
+	// +optional
+	MonitoringNamespace string `json:"monitoringNamespace,omitempty"`
 }
 
 // ----------------------------------------------------------------------------

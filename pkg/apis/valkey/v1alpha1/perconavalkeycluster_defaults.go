@@ -34,6 +34,15 @@ const defaultVersionServiceEndpoint = "https://check.percona.com"
 // defaultActiveDeadlineSeconds is the default hard cap on a backup Job's runtime.
 const defaultActiveDeadlineSeconds int64 = 3600
 
+// usersSecretSuffix is appended to the cluster name to form the default Secret
+// holding user/default passwords (<cluster>-users). Built inline (NOT
+// naming.UsersSecretName) to honour the pkg/apis leaf rule (OQ-1.3).
+const usersSecretSuffix = "-users"
+
+// defaultDisabledCommands is the safe default rename-command-disable set applied
+// when spec.disableCommands is nil (matches the chart's [FLUSHALL, FLUSHDB]).
+var defaultDisabledCommands = []string{"FLUSHALL", "FLUSHDB"}
+
 // Platform is the OpenShift-vs-vanilla discriminator supplied by the caller. It
 // is a leaf-safe local type (a plain string) so that pkg/apis does NOT import
 // pkg/platform (which pulls in client-go) and the pkg/apis leaf rule (doc 02 §3)
@@ -69,6 +78,8 @@ func (cr *PerconaValkeyCluster) CheckNSetDefaults(ctx context.Context, platform 
 	cr.setUpgradeOptionsDefaults()
 	cr.setBackupDefaults()
 	cr.deriveUserSecretNames()
+	cr.setAuthDefaults()
+	cr.setDisableCommandsDefaults()
 	cr.setProbeDefaults()
 
 	return cr.validateBackupStorages()
@@ -138,10 +149,42 @@ func (cr *PerconaValkeyCluster) setBackupDefaults() {
 func (cr *PerconaValkeyCluster) deriveUserSecretNames() {
 	for i := range cr.Spec.Users {
 		if cr.Spec.Users[i].PasswordSecret.Name == "" {
-			cr.Spec.Users[i].PasswordSecret.Name = cr.Name + "-users"
+			cr.Spec.Users[i].PasswordSecret.Name = cr.Name + usersSecretSuffix
 		}
 	}
 }
+
+// setAuthDefaults materializes the default-user auth block (07 §3 / gap §2.3).
+// When the block is absent it is created enabled (the marker default the API
+// server would apply, mirrored here for the in-memory reconciler path). When
+// enabled and no passwordSecret name is given, the name is derived to
+// <cluster>-users (inline, leaf-rule). When auth is explicitly disabled the
+// passwordSecret is left untouched (the default user becomes nopass). Idempotent.
+func (cr *PerconaValkeyCluster) setAuthDefaults() {
+	if cr.Spec.Auth == nil {
+		cr.Spec.Auth = &AuthSpec{Enabled: boolPtr(true)}
+	}
+	if cr.Spec.Auth.Enabled == nil {
+		cr.Spec.Auth.Enabled = boolPtr(true)
+	}
+	if *cr.Spec.Auth.Enabled && cr.Spec.Auth.PasswordSecret.Name == "" {
+		cr.Spec.Auth.PasswordSecret.Name = cr.Name + usersSecretSuffix
+	}
+}
+
+// setDisableCommandsDefaults applies the chart's safe default
+// rename-command-disable set ([FLUSHALL, FLUSHDB]) when the user has not set the
+// field. A nil slice means "use the default"; an explicit empty slice
+// ([]string{}) means "disable nothing" and is preserved. Idempotent.
+func (cr *PerconaValkeyCluster) setDisableCommandsDefaults() {
+	if cr.Spec.DisableCommands == nil {
+		cr.Spec.DisableCommands = append([]string(nil), defaultDisabledCommands...)
+	}
+}
+
+// boolPtr returns a pointer to b (local helper; pkg/apis is a leaf so it cannot
+// import a shared ptr helper from pkg/k8s).
+func boolPtr(b bool) *bool { return &b }
 
 // setProbeDefaults sets probe-timeout defaults that the markers cannot express.
 // Probe fields are not modelled in v1alpha1 spec (probes are operator-managed),

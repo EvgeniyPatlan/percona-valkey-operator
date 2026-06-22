@@ -170,9 +170,53 @@ type PerconaValkeyClusterSpec struct {
 	// +listMapKey=name
 	// +optional
 	Users []UserACLSpec `json:"users,omitempty"`
+	// auth configures the default-user password (requirepass). Distinct from
+	// users[] (named ACL users); this is the chart's primary auth knob. When
+	// enabled (the default) the operator sets the default user's password from
+	// auth.passwordSecret. nil => defaulted (enabled, <cluster>-users secret).
+	// +optional
+	Auth *AuthSpec `json:"auth,omitempty"`
 	// tls is the TLS-in-transit configuration. nil => TLS off.
 	// +optional
 	TLS *TLSConfig `json:"tls,omitempty"`
+	// disableCommands lists Valkey commands the operator renders as
+	// rename-command <CMD> "" so they are unavailable (e.g. FLUSHALL, FLUSHDB).
+	// Defaults to [FLUSHALL, FLUSHDB] (the chart's safe default) when nil.
+	// +optional
+	DisableCommands []string `json:"disableCommands,omitempty"`
+	// expose controls external client access (Service type, source ranges,
+	// annotations, per-pod cluster access). nil => in-cluster headless Service only.
+	// +optional
+	Expose *ExposeSpec `json:"expose,omitempty"`
+	// networkPolicy toggles and customizes the operator-managed default-deny
+	// perimeter (07 §7). nil => no policy (opt-in; recommended true in production).
+	// +optional
+	NetworkPolicy *NetworkPolicySpec `json:"networkPolicy,omitempty"`
+	// env is a map of simple key/value environment variables added to the Valkey
+	// server container (the common "just add an env var" escape hatch).
+	// +optional
+	Env map[string]string `json:"env,omitempty"`
+	// extraEnvVars are full corev1.EnvVar entries (valueFrom etc.) added to the
+	// Valkey server container, layered after env.
+	// +optional
+	ExtraEnvVars []corev1.EnvVar `json:"extraEnvVars,omitempty"`
+	// serviceAccountName is the ServiceAccount for the data pods. Empty => the
+	// operator-created default SA.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+	// automountServiceAccountToken controls SA token automount on the data pods.
+	// Defaults to false (hardened; the chart's default).
+	// +kubebuilder:default=false
+	// +optional
+	AutomountServiceAccountToken *bool `json:"automountServiceAccountToken,omitempty"`
+	// podSecurityContext is the pod-level security context for the data pods. The
+	// operator applies a hardened default; this overrides it.
+	// +optional
+	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
+	// containerSecurityContext is the container-level security context for the
+	// Valkey server container. Overrides the operator's hardened default.
+	// +optional
+	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
 	// exporter configures the Prometheus exporter sidecar.
 	// +optional
 	Exporter ExporterSpec `json:"exporter,omitempty"`

@@ -349,6 +349,31 @@ func TestNodeTLSConfig(t *testing.T) {
 	if got != nil && got.CertManager != nil {
 		t.Error("node TLS config must not carry certManager (mount-only contract)")
 	}
+
+	// The hardening knobs + DH-params Secret ref must propagate so the node
+	// resources builder can mount the DH-params Secret (07 §3.2).
+	hard := tlsCluster("c")
+	hard.Spec.TLS = &valkeyv1alpha1.TLSConfig{
+		SecretName:     "my-byo",
+		AuthClients:    valkeyv1alpha1.TLSAuthClientsRequire,
+		Ciphers:        "HIGH:!aNULL",
+		CipherSuites:   "TLS_AES_256_GCM_SHA384",
+		DHParamsSecret: &valkeyv1alpha1.SecretRef{Name: "dh", Key: "dh-params.pem"},
+	}
+	hn := nodeTLSConfig(hard)
+	if hn == nil {
+		t.Fatal("hardened node TLS config must not be nil")
+	}
+	if hn.AuthClients != valkeyv1alpha1.TLSAuthClientsRequire || hn.Ciphers != "HIGH:!aNULL" || hn.CipherSuites != "TLS_AES_256_GCM_SHA384" {
+		t.Errorf("hardening knobs not propagated: %+v", hn)
+	}
+	if hn.DHParamsSecret == nil || hn.DHParamsSecret.Name != "dh" || hn.DHParamsSecret.Key != "dh-params.pem" {
+		t.Errorf("DHParamsSecret not propagated: %+v", hn.DHParamsSecret)
+	}
+	// Must be deep-copied, not aliased to the cluster's pointer.
+	if hn.DHParamsSecret == hard.Spec.TLS.DHParamsSecret {
+		t.Error("DHParamsSecret must be deep-copied, not aliased")
+	}
 }
 
 // TestStampTLSHash covers the package helper: empty is a no-op; non-empty stamps.

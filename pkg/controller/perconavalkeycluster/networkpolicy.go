@@ -51,25 +51,23 @@ const (
 // (6379) and cluster-bus (16379) ports come from pkg/valkey.
 const metricsPort int32 = 9121
 
-// NetworkPolicy gating + selector configuration (OQ-3 interim).
+// NetworkPolicy gating + selector configuration.
 //
-// The spec.networkPolicy field shape (enabled / clientSelectors /
-// monitoring-namespace) is not yet in pkg/apis (the API leg owns that schema
-// change + deepcopy regen, which is out of this leg's file boundary). Until it
-// lands, the perimeter is configured DETERMINISTICALLY from object annotations
-// — the same OQ-2.1 interim pattern already used to resolve cluster-scoped
-// Secret names from the cluster label rather than a spec field. Absent the
-// enable annotation the reconcile is a no-op so no orphaned policies are left
-// behind (07 §7: opt-in, recommended true in production).
+// The first-class spec.networkPolicy block (enabled / clientNamespaceSelectors /
+// clientPodSelectors / monitoringNamespace) is the source of truth (07 §7). The
+// pre-API interim annotation gate is retained ONLY as a back-compat fallback for
+// clusters that set it before the field landed: spec.networkPolicy takes
+// precedence, and absent both the reconcile is a no-op so no orphaned policies
+// are left behind (07 §7: opt-in, recommended true in production).
 const (
 	// AnnNetworkPolicyEnabled, when set to "true" on the cluster CR, turns on the
-	// operator-managed default-deny perimeter. Maps to the proposed
+	// operator-managed default-deny perimeter. Back-compat fallback for
 	// spec.networkPolicy.enabled (07 §7).
 	AnnNetworkPolicyEnabled = "valkey.percona.com/network-policy"
 
 	// AnnNetworkPolicyMonitoringNamespace overrides the namespace whose Prometheus
 	// pods may scrape the exporter (08 §3.4). Empty => same namespace as the
-	// cluster. Maps to the proposed spec.networkPolicy.monitoringNamespace.
+	// cluster. Back-compat fallback for spec.networkPolicy.monitoringNamespace.
 	AnnNetworkPolicyMonitoringNamespace = "valkey.percona.com/network-policy-monitoring-namespace"
 
 	// annEnabledValue is the truthy value AnnNetworkPolicyEnabled must carry.
@@ -109,8 +107,9 @@ func networkPolicyName(cluster string) string {
 //
 // Flows (all scoped to this cluster's pods via the valkey.percona.com/cluster
 // podSelector):
-//   - Ingress client 6379 from spec.networkPolicy.clientSelectors (interim: any
-//     pod in the cluster namespace until the API field lands).
+//   - Ingress client 6379 from spec.networkPolicy.clientNamespaceSelectors /
+//     clientPodSelectors (default: any pod in the cluster namespace when neither
+//     is set).
 //   - Ingress operator 6379 from the operator pod (app.kubernetes.io/name=valkey-operator).
 //   - Ingress bus-intra 16379 from same-cluster pods (blocks cross-cluster
 //     CLUSTER MEET spoofing, B4).
@@ -155,14 +154,24 @@ func (r *Reconciler) deleteNetworkPolicy(ctx context.Context, cluster *valkeyv1a
 }
 
 // networkPolicyEnabled reports whether the operator-managed perimeter is on for
-// this cluster (OQ-3 interim annotation gate).
+// this cluster. The first-class spec.networkPolicy.enabled field (the API leg)
+// takes precedence; absent that block the OQ-3 interim annotation gate is the
+// fallback (opt-in either way, so the M1 minimal cluster stays policy-free).
 func networkPolicyEnabled(cluster *valkeyv1alpha1.PerconaValkeyCluster) bool {
+	if np := cluster.Spec.NetworkPolicy; np != nil && np.Enabled != nil {
+		return *np.Enabled
+	}
 	return cluster.Annotations[AnnNetworkPolicyEnabled] == annEnabledValue
 }
 
 // monitoringNamespace returns the namespace whose Prometheus pods may scrape the
-// exporter, defaulting to the cluster's own namespace (08 §3.4).
+// exporter, defaulting to the cluster's own namespace (08 §3.4). The first-class
+// spec.networkPolicy.monitoringNamespace field takes precedence over the interim
+// annotation.
 func monitoringNamespace(cluster *valkeyv1alpha1.PerconaValkeyCluster) string {
+	if np := cluster.Spec.NetworkPolicy; np != nil && np.MonitoringNamespace != "" {
+		return np.MonitoringNamespace
+	}
 	if ns := cluster.Annotations[AnnNetworkPolicyMonitoringNamespace]; ns != "" {
 		return ns
 	}
@@ -198,10 +207,11 @@ func clusterValkeyPodSelector(cluster string) map[string]string {
 func buildIngressRules(cluster *valkeyv1alpha1.PerconaValkeyCluster) []networkingv1.NetworkPolicyIngressRule {
 	sameCluster := []networkingv1.NetworkPolicyPeer{podPeer(naming.ClusterSelector(cluster.Name))}
 	return []networkingv1.NetworkPolicyIngressRule{
-		// client-ingress 6379: application data access. Interim: same-namespace
-		// pods until spec.networkPolicy.clientSelectors lands (07 §7).
+		// client-ingress 6379: application data access, scoped to the namespaces /
+		// pods named by spec.networkPolicy.clientNamespaceSelectors and
+		// clientPodSelectors (default: any pod in the cluster namespace, 07 §7).
 		{
-			From:  []networkingv1.NetworkPolicyPeer{podPeer(nil)},
+			From:  clientIngressPeers(cluster),
 			Ports: tcpPorts(valkey.ClientPort),
 		},
 		// operator-ingress 6379: _operator orchestration from the operator pod.
@@ -241,6 +251,54 @@ func buildEgressRules() []networkingv1.NetworkPolicyEgressRule {
 			port(corev1.ProtocolUDP, 53),
 			port(corev1.ProtocolTCP, 53),
 		}},
+	}
+}
+
+// clientIngressPeers builds the client-ingress (6379) peer list from
+// spec.networkPolicy.clientNamespaceSelectors and clientPodSelectors (07 §7):
+//
+//   - neither set => a single peer matching any pod in the policy's own namespace
+//     (the same-namespace default; preserves the pre-field behaviour).
+//   - only namespace selectors => one peer per selector matching every pod in the
+//     selected namespaces.
+//   - only pod selectors => one peer per selector matching those pods in the
+//     policy's own namespace.
+//   - both set => the cross-product: a peer per (namespace, pod) selector pair
+//     requiring BOTH to match (a NetworkPolicyPeer with namespace+pod selectors is
+//     a logical AND), so only the named pods in the named namespaces are allowed.
+func clientIngressPeers(cluster *valkeyv1alpha1.PerconaValkeyCluster) []networkingv1.NetworkPolicyPeer {
+	var nsSelectors, podSelectors []metav1.LabelSelector
+	if np := cluster.Spec.NetworkPolicy; np != nil {
+		nsSelectors = np.ClientNamespaceSelectors
+		podSelectors = np.ClientPodSelectors
+	}
+
+	switch {
+	case len(nsSelectors) == 0 && len(podSelectors) == 0:
+		return []networkingv1.NetworkPolicyPeer{podPeer(nil)}
+	case len(nsSelectors) == 0:
+		peers := make([]networkingv1.NetworkPolicyPeer, 0, len(podSelectors))
+		for i := range podSelectors {
+			peers = append(peers, networkingv1.NetworkPolicyPeer{PodSelector: podSelectors[i].DeepCopy()})
+		}
+		return peers
+	case len(podSelectors) == 0:
+		peers := make([]networkingv1.NetworkPolicyPeer, 0, len(nsSelectors))
+		for i := range nsSelectors {
+			peers = append(peers, networkingv1.NetworkPolicyPeer{NamespaceSelector: nsSelectors[i].DeepCopy()})
+		}
+		return peers
+	default:
+		peers := make([]networkingv1.NetworkPolicyPeer, 0, len(nsSelectors)*len(podSelectors))
+		for i := range nsSelectors {
+			for j := range podSelectors {
+				peers = append(peers, networkingv1.NetworkPolicyPeer{
+					NamespaceSelector: nsSelectors[i].DeepCopy(),
+					PodSelector:       podSelectors[j].DeepCopy(),
+				})
+			}
+		}
+		return peers
 	}
 }
 

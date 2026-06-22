@@ -132,11 +132,24 @@ func tlsSecretName(cluster *valkeyv1alpha1.PerconaValkeyCluster) string {
 // (the user's in secret-ref mode, the operator-provisioned naming.TLSSecretName in
 // cert-manager mode) so the mount and the rendered tls-*-file directives always
 // agree (07 §3.1, §3.3). Returns nil when TLS is off (no mount, no directives).
+//
+// The DH-params Secret reference (and the cipher/authClients hardening knobs) are
+// propagated verbatim so the node resources builder can mount the DH-params Secret
+// at the path the cluster-side config renderer points tls-dh-params-file at; a
+// rendered tls-dh-params-file with no matching mount would crash-loop the pod
+// (07 §3.2). DHParamsSecret is deep-copied so the node spec never aliases the
+// cluster's pointer.
 func nodeTLSConfig(cluster *valkeyv1alpha1.PerconaValkeyCluster) *valkeyv1alpha1.TLSConfig {
 	if cluster.Spec.TLS == nil {
 		return nil
 	}
-	return &valkeyv1alpha1.TLSConfig{SecretName: tlsSecretName(cluster)}
+	return &valkeyv1alpha1.TLSConfig{
+		SecretName:     tlsSecretName(cluster),
+		AuthClients:    cluster.Spec.TLS.AuthClients,
+		Ciphers:        cluster.Spec.TLS.Ciphers,
+		CipherSuites:   cluster.Spec.TLS.CipherSuites,
+		DHParamsSecret: cluster.Spec.TLS.DHParamsSecret.DeepCopy(),
+	}
 }
 
 // computeTLSHash returns the roll-triggering hash for the cluster's current TLS

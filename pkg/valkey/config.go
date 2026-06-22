@@ -47,8 +47,27 @@ const (
 	tlsDisabledPortZero = "0"
 )
 
-// configYes is the canonical "yes" config value.
-const configYes = "yes"
+// configYes / configNo / configOptional are the canonical tls-auth-clients
+// values mapped from the spec.tls.authClients enum (07 §3.2):
+//
+//	off      -> tls-auth-clients no
+//	optional -> tls-auth-clients optional (default)
+//	require  -> tls-auth-clients yes
+const (
+	configYes      = "yes"
+	configNo       = "no"
+	configOptional = "optional"
+)
+
+// authClientsOff / authClientsOptional / authClientsRequire are the spec.tls.
+// authClients enum INPUT values (mirrored from the API TLSAuthClients consts;
+// pkg/valkey is a leaf and cannot import the API package, so they are duplicated
+// here). tlsAuthClientsValue maps them to the engine directive values above.
+const (
+	authClientsOff      = "off"
+	authClientsOptional = "optional"
+	authClientsRequire  = "require"
+)
 
 // keyMaxmemory is the maxmemory live-settable config key.
 const keyMaxmemory = "maxmemory"
@@ -72,6 +91,35 @@ type ConfigInput struct {
 	TLS bool
 	// ACL is true when an ACL file is mounted (adds aclfile).
 	ACL bool
+
+	// Requirepass is the cleartext default-user password (spec.auth) the controller
+	// resolved from the auth Secret. When non-empty the renderer emits a
+	// `requirepass <password>` directive (operator-managed, override-proof) so the
+	// built-in default user requires it. Empty => no requirepass line (auth disabled
+	// or password not yet resolved). It is rendered into valkey.conf but EXCLUDED
+	// from the config-roll hash: a default-user password rotation is applied live
+	// (CONFIG SET requirepass) so it must never roll the pods (07 §3, ADR-008).
+	Requirepass string
+
+	// DisableCommands lists dangerous commands to neutralize via
+	// `rename-command <CMD> ""` (spec.disableCommands; defaults to FLUSHALL/FLUSHDB
+	// upstream of the renderer). These are operator-managed and MUST win over user
+	// config, so they are emitted as dedicated rename-command lines after the
+	// key/value config and cannot be re-enabled through spec.config.
+	DisableCommands []string
+
+	// TLSAuthClients is the spec.tls.authClients enum value (off|optional|require);
+	// empty defaults to optional. Maps to tls-auth-clients no|optional|yes.
+	TLSAuthClients string
+	// TLSCiphers restricts the TLSv1.2-and-below cipher list (tls-ciphers). Empty =>
+	// engine default (directive omitted).
+	TLSCiphers string
+	// TLSCipherSuites restricts the TLSv1.3 cipher suites (tls-ciphersuites). Empty
+	// => engine default (directive omitted).
+	TLSCipherSuites string
+	// TLSDHParamsFile is the absolute path of the mounted Diffie-Hellman params file
+	// wired to tls-dh-params-file. Empty => engine default (directive omitted).
+	TLSDHParamsFile string
 }
 
 // baseConfig returns the operator-managed directives written LAST so they are
@@ -92,6 +140,14 @@ func baseConfig(in ConfigInput) map[string]string {
 	if in.ACL {
 		cfg["aclfile"] = aclFilePath
 	}
+	// requirepass sets the built-in default user's password. It is operator-managed
+	// (rendered in the base block) so a user cannot blank it via spec.config. The
+	// default user is otherwise governed by the mounted aclfile; requirepass is the
+	// chart's primary auth knob and is the canonical way to password the default
+	// user (07 §3 / gap §2.3). Empty => no line (auth disabled / password unresolved).
+	if in.Requirepass != "" {
+		cfg["requirepass"] = in.Requirepass
+	}
 	if in.TLS {
 		cfg["tls-port"] = clientPortStr
 		cfg["port"] = tlsDisabledPortZero
@@ -100,9 +156,33 @@ func baseConfig(in ConfigInput) map[string]string {
 		cfg["tls-cert-file"] = tlsCertMountPath + "/" + tlsSecretFileCert
 		cfg["tls-key-file"] = tlsCertMountPath + "/" + tlsSecretFileKey
 		cfg["tls-ca-cert-file"] = tlsCertMountPath + "/" + tlsSecretFileCA
-		cfg["tls-auth-clients"] = "optional"
+		cfg["tls-auth-clients"] = tlsAuthClientsValue(in.TLSAuthClients)
+		if in.TLSCiphers != "" {
+			cfg["tls-ciphers"] = in.TLSCiphers
+		}
+		if in.TLSCipherSuites != "" {
+			cfg["tls-ciphersuites"] = in.TLSCipherSuites
+		}
+		if in.TLSDHParamsFile != "" {
+			cfg["tls-dh-params-file"] = in.TLSDHParamsFile
+		}
 	}
 	return cfg
+}
+
+// tlsAuthClientsValue maps the spec.tls.authClients enum (off|optional|require)
+// to the Valkey tls-auth-clients directive value (no|optional|yes). An empty or
+// unrecognized value defaults to optional (the operator/upstream default, 07
+// §3.2) so a malformed value can never silently weaken to "no".
+func tlsAuthClientsValue(authClients string) string {
+	switch authClients {
+	case authClientsOff:
+		return configNo
+	case authClientsRequire:
+		return configYes
+	default: // authClientsOptional and any unexpected value.
+		return configOptional
+	}
 }
 
 // mergedConfig layers user config first, operator base last (base wins on
@@ -116,9 +196,11 @@ func mergedConfig(in ConfigInput) map[string]string {
 
 // RenderServerConfig renders the full valkey.conf: user directives first (so the
 // user wins where allowed) then the operator base (override-proof), serialized
-// in sorted key order for byte-stability (no phantom rolls, 04 §11).
+// in sorted key order for byte-stability (no phantom rolls, 04 §11). The
+// dangerous-command rename-command lines are appended LAST so they always win
+// over any user attempt to re-enable a disabled command via spec.config.
 func RenderServerConfig(in ConfigInput) string {
-	return renderConfigMap(mergedConfig(in))
+	return renderConfigMap(mergedConfig(in)) + renderDisableCommands(in.DisableCommands)
 }
 
 // renderConfigMap serializes a config map as sorted "key value\n" lines.
@@ -133,16 +215,51 @@ func renderConfigMap(cfg map[string]string) string {
 	return b.String()
 }
 
+// renderDisableCommands emits one `rename-command <CMD> ""` line per entry, in
+// sorted order for byte-stability. Renaming a command to the empty string is the
+// canonical Valkey idiom for disabling it. These lines are emitted AFTER the
+// key/value config so they are override-proof (a user cannot re-enable a disabled
+// command via spec.config). Empty/blank entries are skipped. Returns "" when the
+// list is empty so the M1 minimal cluster (no disabled commands) is unaffected.
+func renderDisableCommands(commands []string) string {
+	if len(commands) == 0 {
+		return ""
+	}
+	sorted := make([]string, 0, len(commands))
+	for _, c := range commands {
+		if strings.TrimSpace(c) == "" {
+			continue
+		}
+		sorted = append(sorted, c)
+	}
+	slices.Sort(sorted)
+	var b strings.Builder
+	for _, c := range sorted {
+		b.WriteString("rename-command ")
+		b.WriteString(c)
+		b.WriteString(` ""`)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // ServerConfigRollHash is the SHA-256 (hex) over the rendered config EXCLUDING
 // the live-settable keys, with sorted key serialization (04 §11). It is computed
 // from spec (the ConfigInput), never read back from the live ConfigMap, so the
 // stamped ValkeyNode.spec.serverConfigHash can never silently lag desired
 // config. Changing only a live-settable key leaves the hash unchanged (no roll).
+//
+// requirepass is excluded too: the default-user password is rotated live via
+// CONFIG SET requirepass (07 §3, ADR-008), so a password-only change must never
+// roll the pods. The rename-command (disableCommands) lines ARE hashed — adding
+// or removing a disabled command is a real, roll-worthy config change.
 func ServerConfigRollHash(in ConfigInput) string {
 	merged := mergedConfig(in)
 	for _, k := range liveSettableKeys {
 		delete(merged, k)
 	}
-	sum := sha256.Sum256([]byte(renderConfigMap(merged)))
+	delete(merged, "requirepass")
+	body := renderConfigMap(merged) + renderDisableCommands(in.DisableCommands)
+	sum := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(sum[:])
 }

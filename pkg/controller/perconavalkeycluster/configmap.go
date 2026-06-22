@@ -59,7 +59,15 @@ func configInput(cluster *valkeyv1alpha1.PerconaValkeyCluster) valkey.ConfigInpu
 // the stamped ValkeyNode.spec.serverConfigHash can never silently lag. 04 §2.1
 // step4.
 func (r *Reconciler) upsertConfigMap(ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster) (string, error) {
-	in := configInput(cluster)
+	// Re-materialize the security defaults stripped by the earlier finalizer PATCH
+	// so the rendered config + roll hash are deterministic across reconciles.
+	if err := r.ensureConfigDefaults(ctx, cluster); err != nil {
+		return "", err
+	}
+	in, err := r.applySecurityConfigInput(ctx, cluster, configInput(cluster))
+	if err != nil {
+		return "", err
+	}
 	hash := valkey.ServerConfigRollHash(in)
 	rendered := valkey.RenderServerConfig(in)
 

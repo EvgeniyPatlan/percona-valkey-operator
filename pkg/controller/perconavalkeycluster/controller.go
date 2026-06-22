@@ -266,7 +266,7 @@ func (r *Reconciler) shouldGateEngineRoll(_ context.Context, cluster *valkeyv1al
 	// TODO(M4/M6): replace the annotation read with a Watch-driven check of
 	// PerconaValkeyBackup Running / PerconaValkeyRestore pause-requested.
 	v, ok := cluster.Annotations[gateAnnotation]
-	return ok && (v == "true" || v == "1")
+	return ok && (v == annEnabledValue || v == "1")
 }
 
 // reconcileInfra runs phases 1-6: headless Service, PDB, ACL Secret, ConfigMap
@@ -279,6 +279,15 @@ func (r *Reconciler) reconcileInfra(
 	// Phase 1: headless Service.
 	if err := r.upsertService(ctx, cluster); err != nil {
 		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonServiceError, err)
+	}
+	// Phase 1b: external client access (spec.expose). Rendered right after the
+	// headless Service: it provisions/prunes the operator-managed NodePort/
+	// LoadBalancer Service(s) the cluster is reachable through, or reverts to
+	// in-cluster-only access when expose is nil/ClusterIP (03 §2.12). Per-pod
+	// selectors derive from the desired topology (not the live node list), so it
+	// is safe to run before listing nodes.
+	if err := r.reconcileExpose(ctx, cluster); err != nil {
+		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonExposeError, err)
 	}
 	// Phase 2: PodDisruptionBudget.
 	if err := r.reconcilePodDisruptionBudget(ctx, cluster); err != nil {

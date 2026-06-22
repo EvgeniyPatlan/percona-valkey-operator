@@ -19,6 +19,7 @@ package valkeynode
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -36,8 +37,17 @@ const (
 	portClient = valkey.ClientPort // 6379
 	// portBus is the Valkey cluster-bus port (Charter / 05 §ports).
 	portBus = 16379
-	// portExporter is the exporter sidecar metrics port (08 §2.4, redis_exporter default).
+	// portExporter is the exporter sidecar metrics port default (08 §2.4,
+	// redis_exporter default). The effective port is resolved by exporterPort,
+	// which honors spec.exporter.port when the parent sets it.
 	portExporter = 9121
+
+	// envPodIP is the reserved, operator-managed env var injected into the server
+	// container (the downward-API pod IP used by --cluster-announce-ip). User env
+	// (spec.env / spec.extraEnvVars) must never override it; mergeServerEnv drops
+	// any user entry colliding with a reserved name and the operator-managed
+	// entries always win (03 §2.6 user-env precedence).
+	envPodIP = "POD_IP"
 
 	// defaultExporterImage is the documented redis_exporter-compatible fallback
 	// (08 §2.4) used only when the exporter is enabled but the parent supplied no
@@ -65,6 +75,16 @@ const (
 	// (pkg/valkey/config.go tls-*-file directives) so the mounted files and the
 	// rendered paths always agree (07 §3.1).
 	tlsMountPath = naming.TLSMountPath
+
+	// dhParamsVolName / dhParamsMountPath are the DH-params Secret volume and its
+	// read-only mount point. FROZEN M5 contract: dhParamsMountPath MUST equal the
+	// path the cluster-side config renderer points tls-dh-params-file at (the
+	// dhParamsMountPath constant in the perconavalkeycluster auth seam, 07 §3.2) so
+	// a rendered tls-dh-params-file directive always has a matching mounted file —
+	// a missing mount would crash-loop the pod. Kept distinct from the cert mount so
+	// DH params and the cert family rotate independently.
+	dhParamsVolName   = "valkey-tls-dhparams"
+	dhParamsMountPath = "/etc/valkey/tls-dhparams"
 
 	// TLS Secret data keys (03 §2.8 / 07 §3.1) — the single naming.TLSSecretKey*
 	// constants so the mount and the renderer reference identical key names.
@@ -103,6 +123,73 @@ func exporterDefaultResources() corev1.ResourceRequirements {
 // surfaces it).
 func serverImage(node *valkeyv1alpha1.ValkeyNode) string {
 	return node.Spec.Image
+}
+
+// sortedKeys returns the map keys in ascending order, so a map-derived env list
+// renders deterministically (stable pod-template => no phantom rolls).
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// reservedServerEnvNames are the operator-managed server-container env var names
+// that user env (spec.env / spec.extraEnvVars) must never override. The
+// operator-managed entries are emitted first and always win; any user entry
+// colliding with one of these names is dropped (03 §2.6 user-env precedence).
+func reservedServerEnvNames() map[string]bool {
+	return map[string]bool{envPodIP: true}
+}
+
+// mergeServerEnv builds the server container env: the operator-managed entries
+// (managed) first, then user env appended in deterministic order — the simple
+// spec.env map (sorted by key for stable output) followed by spec.extraEnvVars in
+// declared order. User entries whose name collides with a reserved
+// operator-managed name are dropped so the operator's value always wins
+// (precedence: operator-managed > user). Within the user set, a later
+// extraEnvVars entry may shadow an earlier env-map entry of the same name (last
+// wins for user-vs-user), but never a reserved name.
+func mergeServerEnv(managed []corev1.EnvVar, envMap map[string]string, extra []corev1.EnvVar) []corev1.EnvVar {
+	reserved := reservedServerEnvNames()
+	out := make([]corev1.EnvVar, 0, len(managed)+len(envMap)+len(extra))
+	out = append(out, managed...)
+
+	for _, k := range sortedKeys(envMap) {
+		if reserved[k] {
+			continue
+		}
+		out = append(out, corev1.EnvVar{Name: k, Value: envMap[k]})
+	}
+	for _, e := range extra {
+		if reserved[e.Name] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// exporterPort resolves the effective exporter metrics port: spec.exporter.port
+// when the parent set it, else the documented portExporter (9121) fallback. The
+// parent normally materializes the kubebuilder default (9121), but the pointer
+// may be nil for a standalone ValkeyNode, so this keeps the build nil-safe.
+func exporterPort(node *valkeyv1alpha1.ValkeyNode) int32 {
+	if node.Spec.Exporter.Port != nil {
+		return *node.Spec.Exporter.Port
+	}
+	return portExporter
+}
+
+// exporterTLSEnabled reports whether the exporter must serve /metrics over TLS
+// (spec.exporter.tls.enabled). nil block => false (plain HTTP). This is the
+// metrics-serving scheme toggle (08 §3.3); the PodMonitor/ServiceMonitor scheme
+// switch is the observability leg's follow-up, but the serving side is wired
+// here so the container actually listens over HTTPS.
+func exporterTLSEnabled(node *valkeyv1alpha1.ValkeyNode) bool {
+	return node.Spec.Exporter.TLS != nil && node.Spec.Exporter.TLS.Enabled
 }
 
 // configMapName resolves the ConfigMap to mount: the parent-supplied
@@ -176,7 +263,11 @@ func buildProbes(node *valkeyv1alpha1.ValkeyNode) (startup, liveness, readiness 
 }
 
 // buildServerContainer builds the Valkey server container with ports, probes,
-// volume mounts and env.
+// volume mounts and env. The operator-managed env (the downward-API POD_IP used
+// by --cluster-announce-ip) is emitted first; user env (spec.env then
+// spec.extraEnvVars) is appended via mergeServerEnv with the operator-managed
+// names reserved (user env can never clobber POD_IP — operator-managed wins). The
+// propagated containerSecurityContext is applied for a hardened runtime (07 §6).
 func buildServerContainer(node *valkeyv1alpha1.ValkeyNode) corev1.Container {
 	startup, liveness, readiness := buildProbes(node)
 
@@ -195,6 +286,14 @@ func buildServerContainer(node *valkeyv1alpha1.ValkeyNode) corev1.Container {
 	if node.Spec.TLS != nil {
 		mounts = append(mounts, corev1.VolumeMount{Name: tlsVolName, MountPath: tlsMountPath, ReadOnly: true})
 	}
+	if dhParamsSecretName(node) != "" {
+		mounts = append(mounts, corev1.VolumeMount{Name: dhParamsVolName, MountPath: dhParamsMountPath, ReadOnly: true})
+	}
+
+	managedEnv := []corev1.EnvVar{{
+		Name:      envPodIP,
+		ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
+	}}
 
 	c := corev1.Container{
 		Name:      serverContainerName,
@@ -202,20 +301,18 @@ func buildServerContainer(node *valkeyv1alpha1.ValkeyNode) corev1.Container {
 		Resources: node.Spec.Resources,
 		Command: []string{
 			"valkey-server", configMountPath + "/valkey.conf",
-			"--cluster-announce-ip", "$(POD_IP)",
+			"--cluster-announce-ip", "$(" + envPodIP + ")",
 		},
-		Env: []corev1.EnvVar{{
-			Name:      "POD_IP",
-			ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
-		}},
+		Env: mergeServerEnv(managedEnv, node.Spec.Env, node.Spec.ExtraEnvVars),
 		Ports: []corev1.ContainerPort{
 			{Name: "client", ContainerPort: portClient},
 			{Name: "cluster-bus", ContainerPort: portBus},
 		},
-		StartupProbe:   startup,
-		LivenessProbe:  liveness,
-		ReadinessProbe: readiness,
-		VolumeMounts:   mounts,
+		StartupProbe:    startup,
+		LivenessProbe:   liveness,
+		ReadinessProbe:  readiness,
+		VolumeMounts:    mounts,
+		SecurityContext: node.Spec.ContainerSecurityContext,
 	}
 	if node.Spec.ACLSecretName != "" {
 		c.Command = append(c.Command, "--aclfile", aclFilePath)
@@ -224,28 +321,45 @@ func buildServerContainer(node *valkeyv1alpha1.ValkeyNode) corev1.Container {
 }
 
 // exporterScrapeArgs returns the exporter args for scraping the co-located Valkey
-// over loopback, plus any TLS VolumeMounts. This is the TLS-aware metrics-option
-// seam: when spec.tls is set the exporter dials rediss:// and validates the local
-// node against the shared CA mounted at naming.TLSMountPath (08 §2.4); otherwise
-// it dials plain redis:// over loopback. The metrics-TLS *serving* side
-// (spec.exporter.tls, scheme=https on the PodMonitor) is an OPS/observability-leg
-// concern (GO-5.x / OPS-5.3, OQ-2) layered on top of these scrape args and is
-// deliberately not wired here.
+// over loopback, plus any TLS VolumeMounts. Two independent TLS axes are honored:
+//
+//   - scrape side (spec.tls): when the engine speaks TLS the exporter dials
+//     rediss:// and validates the local node against the shared CA mounted at
+//     naming.TLSMountPath (08 §2.4); otherwise it dials plain redis:// over
+//     loopback.
+//   - serving side (spec.exporter.tls.enabled): when set the exporter serves
+//     /metrics over HTTPS using the cluster TLS cert family (08 §3.3), wiring the
+//     redis_exporter --tls-server-cert-file/--tls-server-key-file flags. The
+//     matching PodMonitor/ServiceMonitor scheme=https switch is the observability
+//     leg's follow-up; the serving side is wired here so the container truly
+//     listens over HTTPS.
+//
+// Either axis mounts the shared TLS volume (deduplicated to a single mount).
 func exporterScrapeArgs(node *valkeyv1alpha1.ValkeyNode) (args []string, mounts []corev1.VolumeMount) {
-	if node.Spec.TLS != nil {
-		args = []string{
+	port := exporterPort(node)
+	scrapeTLS := node.Spec.TLS != nil
+	serveTLS := exporterTLSEnabled(node)
+
+	if scrapeTLS {
+		args = append(args,
 			fmt.Sprintf("--redis.addr=rediss://localhost:%d", portClient),
 			fmt.Sprintf("--tls-ca-cert-file=%s/%s", tlsMountPath, tlsKeyCA),
-			fmt.Sprintf("--web.listen-address=:%d", portExporter),
-		}
+		)
+	} else {
+		args = append(args, fmt.Sprintf("--redis.addr=redis://localhost:%d", portClient))
+	}
+	args = append(args, fmt.Sprintf("--web.listen-address=:%d", port))
+	if serveTLS {
+		args = append(args,
+			fmt.Sprintf("--tls-server-cert-file=%s/%s", tlsMountPath, tlsKeyCert),
+			fmt.Sprintf("--tls-server-key-file=%s/%s", tlsMountPath, tlsKeyKey),
+		)
+	}
+
+	if scrapeTLS || serveTLS {
 		mounts = []corev1.VolumeMount{{Name: tlsVolName, MountPath: tlsMountPath, ReadOnly: true}}
-		return args, mounts
 	}
-	args = []string{
-		fmt.Sprintf("--redis.addr=redis://localhost:%d", portClient),
-		fmt.Sprintf("--web.listen-address=:%d", portExporter),
-	}
-	return args, nil
+	return args, mounts
 }
 
 // exporterCredEnv returns the _exporter auth env: the username plus the password
@@ -271,10 +385,14 @@ func exporterCredEnv(node *valkeyv1alpha1.ValkeyNode) []corev1.EnvVar {
 }
 
 // buildExporterSidecar builds the exporter sidecar container, or nil when the
-// exporter is disabled. It serves /metrics on port 9121, authenticates as
-// _exporter (exporterCredEnv) and scrapes the local engine over loopback (TLS
-// when spec.tls is set, exporterScrapeArgs). It has its OWN HTTP readiness probe
-// so its outage never marks Valkey unready or triggers a failover (08 §2.4, §6).
+// exporter is disabled. It serves /metrics on the resolved exporter port
+// (spec.exporter.port, default 9121), authenticates as _exporter
+// (exporterCredEnv) and scrapes the local engine over loopback (TLS when
+// spec.tls is set, exporterScrapeArgs). It has its OWN HTTP(S) readiness probe so
+// its outage never marks Valkey unready or triggers a failover (08 §2.4, §6). The
+// readiness scheme follows spec.exporter.tls.enabled (HTTPS when serving over
+// TLS). The propagated containerSecurityContext is applied so the sidecar runs
+// under the same hardened context as the server (07 §6).
 func buildExporterSidecar(node *valkeyv1alpha1.ValkeyNode) *corev1.Container {
 	if !node.Spec.Exporter.Enabled {
 		return nil
@@ -292,13 +410,20 @@ func buildExporterSidecar(node *valkeyv1alpha1.ValkeyNode) *corev1.Container {
 		image = defaultExporterImage
 	}
 
+	port := exporterPort(node)
+	probeScheme := corev1.URISchemeHTTP
+	if exporterTLSEnabled(node) {
+		probeScheme = corev1.URISchemeHTTPS
+	}
+
 	return &corev1.Container{
-		Name:         exporterContainerName,
-		Image:        image,
-		Args:         args,
-		Env:          exporterCredEnv(node),
-		Ports:        []corev1.ContainerPort{{Name: "metrics", ContainerPort: portExporter, Protocol: corev1.ProtocolTCP}},
-		VolumeMounts: mounts,
+		Name:            exporterContainerName,
+		Image:           image,
+		Args:            args,
+		Env:             exporterCredEnv(node),
+		Ports:           []corev1.ContainerPort{{Name: "metrics", ContainerPort: port, Protocol: corev1.ProtocolTCP}},
+		VolumeMounts:    mounts,
+		SecurityContext: node.Spec.ContainerSecurityContext,
 		ReadinessProbe: &corev1.Probe{
 			InitialDelaySeconds: exporterReadinessInitial,
 			PeriodSeconds:       exporterReadinessInterval,
@@ -306,7 +431,7 @@ func buildExporterSidecar(node *valkeyv1alpha1.ValkeyNode) *corev1.Container {
 			SuccessThreshold:    1,
 			FailureThreshold:    defaultFailureThreshold,
 			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{Path: "/", Port: intstr.FromInt(portExporter)},
+				HTTPGet: &corev1.HTTPGetAction{Path: "/", Port: intstr.FromInt32(port), Scheme: probeScheme},
 			},
 		},
 		Resources: resources,
@@ -398,11 +523,36 @@ func buildVolumes(node *valkeyv1alpha1.ValkeyNode) []corev1.Volume {
 			},
 		})
 	}
+	if name := dhParamsSecretName(node); name != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: dhParamsVolName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: name},
+			},
+		})
+	}
 	return volumes
+}
+
+// dhParamsSecretName returns the propagated DH-params Secret name (or "" when
+// TLS is off or no DH params are configured). The cluster propagates
+// spec.tls.dhParamsSecret onto node.Spec.TLS.DHParamsSecret; when set, the
+// Secret is mounted at dhParamsMountPath so the rendered tls-dh-params-file
+// directive resolves (07 §3.2).
+func dhParamsSecretName(node *valkeyv1alpha1.ValkeyNode) string {
+	if node.Spec.TLS == nil || node.Spec.TLS.DHParamsSecret == nil {
+		return ""
+	}
+	return node.Spec.TLS.DHParamsSecret.Name
 }
 
 // buildPodTemplate builds the PodTemplateSpec, including the serverConfigHash
 // pod-template annotation that triggers the rolling restart on change (04 §11).
+// The propagated pod-level security knobs are applied: podSecurityContext sets
+// the pod SecurityContext, serviceAccountName sets the pod ServiceAccountName,
+// and automountServiceAccountToken (a *bool, default false materialized by the
+// API) gates SA-token automounting (07 §6). Per-container hardening
+// (containerSecurityContext) is applied in buildServerContainer / the exporter.
 func buildPodTemplate(node *valkeyv1alpha1.ValkeyNode, labels map[string]string) (corev1.PodTemplateSpec, error) {
 	containers, err := buildContainers(node)
 	if err != nil {
@@ -411,13 +561,16 @@ func buildPodTemplate(node *valkeyv1alpha1.ValkeyNode, labels map[string]string)
 	tmpl := corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{Labels: labels},
 		Spec: corev1.PodSpec{
-			Containers:                containers,
-			ImagePullSecrets:          node.Spec.ImagePullSecrets,
-			NodeSelector:              node.Spec.NodeSelector,
-			Affinity:                  node.Spec.Affinity,
-			Tolerations:               node.Spec.Tolerations,
-			TopologySpreadConstraints: node.Spec.TopologySpreadConstraints,
-			Volumes:                   buildVolumes(node),
+			Containers:                   containers,
+			ImagePullSecrets:             node.Spec.ImagePullSecrets,
+			NodeSelector:                 node.Spec.NodeSelector,
+			Affinity:                     node.Spec.Affinity,
+			Tolerations:                  node.Spec.Tolerations,
+			TopologySpreadConstraints:    node.Spec.TopologySpreadConstraints,
+			Volumes:                      buildVolumes(node),
+			SecurityContext:              node.Spec.PodSecurityContext,
+			ServiceAccountName:           node.Spec.ServiceAccountName,
+			AutomountServiceAccountToken: node.Spec.AutomountServiceAccountToken,
 		},
 	}
 	applyConfigHashAnnotation(&tmpl, node.Spec.ServerConfigHash)
