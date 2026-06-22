@@ -54,6 +54,16 @@ rules:
   - update
   - watch
 - apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
@@ -81,15 +91,8 @@ rules:
   - valkey.percona.com
   resources:
   - perconavalkeybackups
-  - perconavalkeyrestores
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - valkey.percona.com
-  resources:
   - perconavalkeyclusters
+  - perconavalkeyrestores
   - valkeynodes
   verbs:
   - create
@@ -102,14 +105,18 @@ rules:
 - apiGroups:
   - valkey.percona.com
   resources:
+  - perconavalkeybackups/finalizers
   - perconavalkeyclusters/finalizers
+  - perconavalkeyrestores/finalizers
   - valkeynodes/finalizers
   verbs:
   - update
 - apiGroups:
   - valkey.percona.com
   resources:
+  - perconavalkeybackups/status
   - perconavalkeyclusters/status
+  - perconavalkeyrestores/status
   - valkeynodes/status
   verbs:
   - get

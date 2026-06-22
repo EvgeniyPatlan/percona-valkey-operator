@@ -12,8 +12,12 @@ package main
 // See docs/architecture/02-repo-layout.md §3, §9.
 
 import (
+	// PerconaValkeyBackup controller (M4): blank-imported for its init() registration.
+	_ "valkey.percona.com/percona-valkey-operator/pkg/controller/perconavalkeybackup"
 	// PerconaValkeyCluster controller (M3): blank-imported for its init() registration.
 	_ "valkey.percona.com/percona-valkey-operator/pkg/controller/perconavalkeycluster"
+	// PerconaValkeyRestore controller (M4): blank-imported for its init() registration.
+	_ "valkey.percona.com/percona-valkey-operator/pkg/controller/perconavalkeyrestore"
 	// ValkeyNode controller (M2): blank-imported for its init() registration.
 	_ "valkey.percona.com/percona-valkey-operator/pkg/controller/valkeynode"
 )
