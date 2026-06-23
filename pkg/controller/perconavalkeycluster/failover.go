@@ -23,6 +23,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
+	opmetrics "valkey.percona.com/percona-valkey-operator/pkg/metrics"
 	"valkey.percona.com/percona-valkey-operator/pkg/valkey"
 )
 
@@ -71,6 +72,7 @@ func (r *Reconciler) proactiveFailover(
 
 	r.recorder.Eventf(cluster, nil, eventNormal, EventFailoverInitiated, "Failover",
 		"initiating graceful failover of shard %s to replica %s", shardID, target.ID)
+	opmetrics.IncFailover(cluster.Namespace, cluster.Name, opmetrics.FailoverGraceful)
 	if err := target.Client().ClusterFailover(ctx, valkey.FailoverGraceful); err != nil {
 		r.recorder.Eventf(cluster, nil, eventWarning, EventFailoverFailed, "Failover",
 			"CLUSTER FAILOVER on %s failed: %s", target.ID, err.Error())

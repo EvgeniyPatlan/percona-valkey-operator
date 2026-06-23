@@ -25,6 +25,7 @@ import (
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
 	"valkey.percona.com/percona-valkey-operator/pkg/k8s"
+	opmetrics "valkey.percona.com/percona-valkey-operator/pkg/metrics"
 )
 
 // Event type aliases (k8s Event Normal/Warning) used with the EventRecorder.
@@ -178,9 +179,21 @@ func applyDerivedState(cluster *valkeyv1alpha1.PerconaValkeyCluster) {
 }
 
 // writeStatus recomputes the derived state then persists the status subresource
-// via the shared re-fetch+patch helper (04 §9 re-fetch-before-update).
+// via the shared re-fetch+patch helper (04 §9 re-fetch-before-update). It also
+// mirrors the finalized status onto the operator's business gauges
+// (valkey_operator_cluster_*) so they track every state-finalizing reconcile; the
+// per-cluster series are reaped on teardown by the finalizer (handleDeletion), so
+// observation is skipped once the cluster is being deleted to avoid resurrecting a
+// just-deleted series with a transient Reconciling value.
 func (r *Reconciler) writeStatus(ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster) error {
 	applyDerivedState(cluster)
+	if cluster.DeletionTimestamp.IsZero() {
+		opmetrics.ObserveCluster(
+			cluster.Namespace, cluster.Name,
+			conditionTrue(cluster, CondReady), string(cluster.Status.State),
+			int(cluster.Spec.Shards), int(cluster.Status.ReadyShards),
+		)
+	}
 	return k8s.WriteStatus(ctx, r.Client, cluster, func(c *valkeyv1alpha1.PerconaValkeyCluster) *valkeyv1alpha1.PerconaValkeyClusterStatus {
 		return &c.Status
 	})

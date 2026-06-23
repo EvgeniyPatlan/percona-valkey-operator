@@ -21,6 +21,7 @@ import (
 
 	ginkgo "github.com/onsi/ginkgo/v2"
 	gomega "github.com/onsi/gomega"
+	dto "github.com/prometheus/client_model/go"
 
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
 	"valkey.percona.com/percona-valkey-operator/pkg/controller/perconavalkeycluster"
@@ -199,6 +201,12 @@ var _ = ginkgo.Describe("PerconaValkeyCluster controller bootstrap", func() {
 		// CR-6: 3 primaries replicated-to once, no double-issue. 3 replicas total
 		// (one per shard), so exactly 3 REPLICATE calls.
 		gomega.Expect(fc.callsOfType("REPLICATE")).To(gomega.HaveLen(3))
+
+		// Operator business metrics: a Ready cluster sets cluster_ready=1 and the
+		// desired/ready shard gauges to 3 on the shared (served) registry.
+		expectClusterGauge(ns, "c2", "valkey_operator_cluster_ready", 1)
+		expectClusterGauge(ns, "c2", "valkey_operator_cluster_shards_desired", 3)
+		expectClusterGauge(ns, "c2", "valkey_operator_cluster_shards_ready", 3)
 	})
 
 	ginkgo.It("repairs a stale-gossip partition (Bug #1): re-MEETs all nodes at current addresses and re-converges, but a healthy cluster never churns", func() {
@@ -250,6 +258,11 @@ var _ = ginkgo.Describe("PerconaValkeyCluster controller bootstrap", func() {
 		// The repair issued fresh MEETs (the count grew past the healthy baseline).
 		gomega.Expect(len(fc.callsOfType("MEET"))).To(gomega.BeNumerically(">", meetsAfterForm),
 			"the gossip-repair step must have re-issued CLUSTER MEET")
+
+		// The gossip-repair business counter advanced (bug #1 repair path fired).
+		gomega.Expect(counterValue("valkey_operator_gossip_repair_total",
+			map[string]string{"namespace": ns, "cluster": "cgossip"})).To(gomega.BeNumerically(">=", 1),
+			"the gossip-repair counter must have incremented when the repair fired")
 
 		// Cluster returns Ready and stays churn-free again.
 		repaired := &valkeyv1alpha1.PerconaValkeyCluster{}
@@ -430,4 +443,58 @@ func conditionReason(cluster *valkeyv1alpha1.PerconaValkeyCluster, condType stri
 		}
 	}
 	return ""
+}
+
+// gaugeValue gathers the named gauge from the shared controller-runtime registry
+// (the one served on /metrics) and returns the value of the series matching every
+// label in want; it returns (0, false) when no such series is present.
+func gaugeValue(name string, want map[string]string) (float64, bool) {
+	v, ok := sampleValue(name, want, func(m *dto.Metric) float64 { return m.GetGauge().GetValue() })
+	return v, ok
+}
+
+// counterValue is gaugeValue's counter analogue, reading the counter sample value.
+func counterValue(name string, want map[string]string) float64 {
+	v, _ := sampleValue(name, want, func(m *dto.Metric) float64 { return m.GetCounter().GetValue() })
+	return v
+}
+
+// sampleValue walks the gathered metric families for name and returns the sample
+// value (via read) of the first series whose labels are a superset of want.
+func sampleValue(name string, want map[string]string, read func(*dto.Metric) float64) (float64, bool) {
+	families, err := crmetrics.Registry.Gather()
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	for _, fam := range families {
+		if fam.GetName() != name {
+			continue
+		}
+		for _, m := range fam.GetMetric() {
+			if metricMatchesLabels(m, want) {
+				return read(m), true
+			}
+		}
+	}
+	return 0, false
+}
+
+// metricMatchesLabels reports whether the metric carries every want label/value.
+func metricMatchesLabels(m *dto.Metric, want map[string]string) bool {
+	have := make(map[string]string, len(m.GetLabel()))
+	for _, lp := range m.GetLabel() {
+		have[lp.GetName()] = lp.GetValue()
+	}
+	for k, v := range want {
+		if have[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// expectClusterGauge asserts the named (namespace, cluster)-labelled gauge equals
+// want on the shared registry.
+func expectClusterGauge(namespace, cluster, name string, want float64) {
+	got, ok := gaugeValue(name, map[string]string{"namespace": namespace, "cluster": cluster})
+	gomega.Expect(ok).To(gomega.BeTrue(), "gauge %s for %s/%s not present", name, namespace, cluster)
+	gomega.Expect(got).To(gomega.Equal(want), "gauge %s for %s/%s", name, namespace, cluster)
 }

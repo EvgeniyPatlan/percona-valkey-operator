@@ -30,6 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
+	opmetrics "valkey.percona.com/percona-valkey-operator/pkg/metrics"
 	"valkey.percona.com/percona-valkey-operator/pkg/naming"
 )
 
@@ -128,6 +129,10 @@ func (r *Reconciler) handleDeletion(ctx context.Context, cluster *valkeyv1alpha1
 	if err := r.Update(ctx, cluster); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove cluster finalizers: %w", err)
 	}
+	// Reap the per-cluster business gauges so a removed cluster leaves no stale
+	// valkey_operator_cluster_* series behind (the action counters are monotonic
+	// event records and intentionally survive).
+	opmetrics.DeleteCluster(cluster.Namespace, cluster.Name)
 	log.Info("cluster teardown complete; finalizers removed, GC proceeds")
 	return ctrl.Result{}, nil
 }

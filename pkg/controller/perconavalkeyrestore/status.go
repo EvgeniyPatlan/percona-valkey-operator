@@ -26,6 +26,7 @@ import (
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
 	"valkey.percona.com/percona-valkey-operator/pkg/k8s"
+	opmetrics "valkey.percona.com/percona-valkey-operator/pkg/metrics"
 )
 
 // Event types (k8s Event Normal/Warning) used with the EventRecorder.
@@ -194,10 +195,19 @@ func (r *Reconciler) writeStatus(ctx context.Context, rst *valkeyv1alpha1.Percon
 }
 
 // advance records the new conceptual phase (annotation) and writes the projected
-// status in one step. It is the only way the phase machine moves forward.
+// status in one step. It is the only way the phase machine moves forward, so it is
+// the single point that increments the terminal-restore counter: a terminal phase
+// (Succeeded/Failed) is reached exactly once per restore because the next reconcile
+// short-circuits on isTerminal, so the counter records one event per restore.
 func (r *Reconciler) advance(ctx context.Context, rst *valkeyv1alpha1.PerconaValkeyRestore, phase restorePhase, desc string) error {
 	if err := r.setPhaseAnnotation(ctx, rst, map[string]string{annPhase: string(phase)}); err != nil {
 		return err
+	}
+	switch phase {
+	case phaseSucceeded:
+		opmetrics.IncRestore(rst.Namespace, rst.Spec.ClusterName, opmetrics.ResultSucceeded)
+	case phaseFailed:
+		opmetrics.IncRestore(rst.Namespace, rst.Spec.ClusterName, opmetrics.ResultFailed)
 	}
 	return r.writeStatus(ctx, rst, phase, desc)
 }

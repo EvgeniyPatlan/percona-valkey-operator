@@ -31,6 +31,7 @@ import (
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
 	"valkey.percona.com/percona-valkey-operator/pkg/backup"
+	opmetrics "valkey.percona.com/percona-valkey-operator/pkg/metrics"
 	"valkey.percona.com/percona-valkey-operator/pkg/naming"
 	"valkey.percona.com/percona-valkey-operator/pkg/valkey"
 )
@@ -352,6 +353,7 @@ func (r *Reconciler) handleJobComplete(ctx context.Context, bk *valkeyv1alpha1.P
 
 	if bk.Status.SlotCoverage == valkeyv1alpha1.SlotCoverageComplete {
 		setState(bk, valkeyv1alpha1.BackupStateSucceeded, ReasonSucceeded+": all 16384 slots covered")
+		opmetrics.IncBackup(bk.Namespace, bk.Spec.ClusterName, opmetrics.ResultSucceeded)
 		r.recorder.Eventf(bk, nil, eventNormal, EventBackupSucceeded, "Backup",
 			"backup %s succeeded with complete slot coverage", bk.Name)
 		return
@@ -368,6 +370,7 @@ func (r *Reconciler) handleJobComplete(ctx context.Context, bk *valkeyv1alpha1.P
 		return
 	}
 	setState(bk, valkeyv1alpha1.BackupStateSucceeded, ReasonDegraded+": partial slot coverage (best-effort)")
+	opmetrics.IncBackup(bk.Namespace, bk.Spec.ClusterName, opmetrics.ResultSucceeded)
 	r.recorder.Eventf(bk, nil, eventWarning, EventBackupDegraded, "Backup",
 		"backup %s degraded: partial slot coverage under best-effort", bk.Name)
 }
@@ -449,6 +452,7 @@ func (r *Reconciler) failBackup(bk *valkeyv1alpha1.PerconaValkeyBackup, reason, 
 		bk.Status.Completed = &now
 	}
 	setState(bk, valkeyv1alpha1.BackupStateFailed, reason+": "+msg)
+	opmetrics.IncBackup(bk.Namespace, bk.Spec.ClusterName, opmetrics.ResultFailed)
 	r.recorder.Eventf(bk, nil, eventWarning, EventBackupFailed, "Backup", "backup %s failed: %s", bk.Name, msg)
 }
 

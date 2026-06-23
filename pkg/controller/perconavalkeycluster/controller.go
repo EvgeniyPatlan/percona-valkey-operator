@@ -43,6 +43,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
+	opmetrics "valkey.percona.com/percona-valkey-operator/pkg/metrics"
 	"valkey.percona.com/percona-valkey-operator/pkg/naming"
 	"valkey.percona.com/percona-valkey-operator/pkg/valkey"
 	"valkey.percona.com/percona-valkey-operator/pkg/version"
@@ -421,6 +422,7 @@ func (r *Reconciler) bootstrapJoin(
 	// cluster NEVER re-MEETs (no steady-state churn).
 	if !state.AllReachableClusterStateOK() && allNodesReady(nodes) {
 		if met := r.repairStaleGossip(ctx, cluster, state); met > 0 {
+			opmetrics.IncGossipRepair(cluster.Namespace, cluster.Name)
 			return r.progressRequeue(ctx, cluster, "repairing stale gossip via CLUSTER MEET")
 		}
 	}

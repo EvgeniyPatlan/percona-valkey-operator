@@ -23,6 +23,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
+	opmetrics "valkey.percona.com/percona-valkey-operator/pkg/metrics"
 	"valkey.percona.com/percona-valkey-operator/pkg/valkey"
 )
 
@@ -66,6 +67,7 @@ func (r *Reconciler) promoteOrphanedReplicas(
 		// FailoverDecision encodes the FORCE-vs-TAKEOVER rule; with quorum lost it
 		// yields TAKEOVER (the only promotion that succeeds without a quorum vote).
 		mode := valkey.FailoverDecision(state.HasFailoverQuorum())
+		opmetrics.IncFailover(cluster.Namespace, cluster.Name, failoverMetricKind(mode))
 		if err := rep.Client().ClusterFailover(ctx, mode); err != nil {
 			return acted, fmt.Errorf("CLUSTER FAILOVER %s on %s: %w", string(mode), rep.ID, err)
 		}
@@ -166,4 +168,17 @@ func failoverModeLabel(mode valkey.FailoverMode) string {
 		return "FAILOVER"
 	}
 	return "FAILOVER " + string(mode)
+}
+
+// failoverMetricKind maps the engine FailoverMode onto the bounded metric enum so
+// the failover counter's kind label stays a closed set (graceful|force|takeover).
+func failoverMetricKind(mode valkey.FailoverMode) opmetrics.FailoverKind {
+	switch mode {
+	case valkey.FailoverTakeover:
+		return opmetrics.FailoverTakeover
+	case valkey.FailoverForce:
+		return opmetrics.FailoverForce
+	default:
+		return opmetrics.FailoverGraceful
+	}
 }
