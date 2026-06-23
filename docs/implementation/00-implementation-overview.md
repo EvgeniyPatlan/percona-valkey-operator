@@ -1,5 +1,17 @@
 # Implementation Overview — Percona Operator for Valkey
 
+> **STATUS (as-built): all phases implemented (M0–M8 complete, 8 commits on `main`) — not yet GA.**
+> This document was written as the forward-looking master plan; every milestone it sequences
+> (M0 Bootstrap → M8 Hardening/GA) is now **built and committed**. All four controllers,
+> reconciliation, security/observability hardening, backup/restore, smart updates, and
+> Helm/kustomize/OLM distribution are in the tree. Two items are **deferred to GA**: the `v1`
+> conversion webhook (only the webhook-cert startup gate is wired; the conversion logic is not
+> built) and the `expose.perPod` cluster-announce-ip wiring (partial). The fast, hermetic
+> quality layer is green (build, envtest, ≥80% merged coverage, CI gates); cluster-only
+> validation (kuttl e2e, chaos, perf) and a few process items remain. The authoritative
+> sign-off gate is **[GA-readiness.md](GA-readiness.md)** — read it for the per-milestone
+> evidence, coverage table, known deferrals, and the GA checklist.
+
 > **Master plan.** This is the top-level map that ties the nine phase plans together into a
 > single, sequenced delivery. It is *not* a substitute for the per-phase docs — it summarises
 > their goals, fixes the milestone build order (M0 → M8), reconciles the effort rollups, and

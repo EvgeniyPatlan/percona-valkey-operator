@@ -132,7 +132,12 @@ erDiagram
 
 The top-level CR. The `spec` is grouped below by concern. Field names, JSON tags, and
 validation markers mirror the upstream `ValkeyClusterSpec` where one exists, with Percona
-additions (`crVersion`, `mode`, `backup`, `upgradeOptions`, `pause`) layered on.
+additions (`crVersion`, `mode`, `backup`, `upgradeOptions`, `pause`) layered on. The M5/hardening
+pass adds the security and access fields catalogued in §§2.7a, 2.8, 2.9, 2.10a–2.10d (`auth`,
+TLS `authClients`/`ciphers`/`cipherSuites`/`dhParamsSecret`, `disableCommands`,
+`podSecurityContext`, `containerSecurityContext`, `serviceAccountName`,
+`automountServiceAccountToken`, `env`, `extraEnvVars`, `expose`, `networkPolicy`, and the
+`exporter` `port`/`scrapeInterval`/`tls` knobs).
 
 ### 2.1 Spec field-group overview
 
@@ -143,9 +148,11 @@ flowchart TD
     PVK --> TOP["Topology<br/>mode · shards · replicas · workloadType"]
     PVK --> SCHED["Scheduling<br/>resources · affinity · nodeSelector<br/>tolerations · topologySpreadConstraints"]
     PVK --> STORE["Storage<br/>persistence (size · storageClassName · reclaimPolicy)"]
-    PVK --> CFG["Engine Config<br/>config (map) · containers"]
-    PVK --> SEC["Security<br/>users (ACL) · tls"]
-    PVK --> OBS["Observability<br/>exporter"]
+    PVK --> CFG["Engine Config<br/>config (map) · containers · disableCommands"]
+    PVK --> ENVG["Environment<br/>env · extraEnvVars"]
+    PVK --> SEC["Security<br/>users (ACL) · auth · tls · disableCommands<br/>podSecurityContext · containerSecurityContext<br/>serviceAccountName · automountServiceAccountToken"]
+    PVK --> NET["Networking<br/>expose · networkPolicy"]
+    PVK --> OBS["Observability<br/>exporter (port · scrapeInterval · tls)"]
     PVK --> AVAIL["Availability<br/>podDisruptionBudget"]
     PVK --> BKP["Backup<br/>backup.schedule[] · backup.storages{}"]
     PVK --> UPG["Lifecycle<br/>upgradeOptions (apply · schedule · versionServiceEndpoint)"]
@@ -202,6 +209,7 @@ are the heart of the CRD's CEL surface (§4).
 |-------|------|---------|-----------|-------------|
 | `config` | `map[string]string` | `nil` | no | Additional `valkey.conf` parameters. **User config is rendered first; operator-managed base config last so base wins on conflict** (upstream `buildManagedConfig`). User cannot override `cluster-enabled`, `protected-mode`, `cluster-node-timeout`, `port`, `tls-*`, `aclfile`, `dir`, `cluster-config-file` — silently ignored. The live-settable subset (`maxmemory`, `maxmemory-policy`, `maxclients`) is applied via `CONFIG SET` without a pod roll; all other changes trigger a rolling restart via the config hash. |
 | `containers` | `[]corev1.Container` | `nil` | no | Strategic-merge patch of default containers (`server`, `metrics-exporter`); unknown names are appended. Propagated to each `ValkeyNode`. |
+| `disableCommands` | `[]string` | `[FLUSHALL, FLUSHDB]` (when `nil`) | no | Valkey commands the operator renders as `rename-command <CMD> ""` so they are unavailable. `nil` ⇒ defaulted to the chart's safe set `[FLUSHALL, FLUSHDB]` in `CheckNSetDefaults`; an **explicit empty slice** `[]` means "disable nothing" and is preserved. Also a security knob — see [Security Architecture](07-security.md). |
 
 ### 2.7 Users (ACL)
 
@@ -226,6 +234,22 @@ with `_`). See [Security Architecture](07-security.md) for the full ACL/secret d
 | `users[].channels.patterns` | `[]string` | `nil` | Pub/Sub channels → `&pattern`. |
 | `users[].permissions` | `string` | `""` | Raw ACL appended verbatim after generated rules. |
 
+### 2.7a Auth (default-user password / `requirepass`)
+
+`spec.auth` (a `*AuthSpec` pointer) governs **only** the built-in Valkey `default` user
+(`requirepass`) and is **distinct** from `spec.users[]` (named, non-default ACL users). It is the
+chart's primary auth knob: when enabled (the default) the operator sets the `default` user's
+password from `auth.passwordSecret`; when disabled the `default` user is left passwordless
+(`nopass`). All password material is **Secret-ref only** (never inline, ADR-008). `auth == nil` is
+materialised in `CheckNSetDefaults` to `{enabled:true, passwordSecret.name:<cluster>-users}`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auth` | `*AuthSpec` | `{enabled:true}` (defaulted) | Default-user (`requirepass`) configuration. `nil` ⇒ defaulted to enabled. |
+| `auth.enabled` | `*bool` | `true` | Toggle default-user password auth. `true` ⇒ the `default` user requires the password from `passwordSecret`; `false` ⇒ the `default` user is left passwordless (`nopass`). Pointer so absence is distinct from explicit `false`. |
+| `auth.passwordSecret.name` | `string` | `<cluster>-users` (derived when enabled) | Secret holding the default user's password(s). |
+| `auth.passwordSecret.keys` | `[]string` | `[name]` | Keys inside the Secret. Multiple keys enable Valkey multi-password rotation (live `ACL SETUSER`, no pod roll). |
+
 ### 2.8 TLS
 
 > **This table is the AUTHORITATIVE field catalogue for `TLSConfig`.** [Security Architecture](07-security.md) §3.3 elaborates the runtime behaviour (provisioning sequence, mTLS, rotation), but the field shape is defined here.
@@ -239,8 +263,15 @@ with `_`). See [Security Architecture](07-security.md) for the full ACL/secret d
 | `tls.certManager.issuerRef` | `*IssuerRef` | — | **cert-manager mode (recommended).** When set, the operator provisions a `cert-manager.io/v1` `Certificate` with DNS SANs for the headless Service + per-pod names; cert-manager populates the TLS Secret (auto-rotation). |
 | `tls.certManager.issuerRef.name` | `string` | — | Name of the cert-manager `Issuer`/`ClusterIssuer`. |
 | `tls.certManager.issuerRef.kind` | `enum{Issuer,ClusterIssuer}` | `Issuer` | Issuer scope. |
+| `tls.authClients` | `enum{off,optional,require}` | `optional` | Client-certificate (mTLS) policy → Valkey `tls-auth-clients`. `optional` = `tls-auth-clients optional` (encryption + server auth, ACL password auth over the channel; the default); `require` = `tls-auth-clients yes` (mutual TLS, zero-trust); `off` = `tls-auth-clients no` (no client-cert validation). Surfaced as a single enum so the policy cannot be partially configured. See [Security Architecture](07-security.md) §3.2. |
+| `tls.ciphers` | `string` | `""` (server default) | Restricts the TLSv1.2-and-below cipher list (OpenSSL cipher-string syntax) → `tls-ciphers`. FIPS/compliance knob. |
+| `tls.cipherSuites` | `string` | `""` (server default) | Restricts the TLSv1.3 cipher suites (OpenSSL ciphersuites syntax) → `tls-ciphersuites`. |
+| `tls.dhParamsSecret` | `*SecretRef` | `nil` (server default) | Secret-ref (`{name, key}`) holding Diffie-Hellman parameters (`dh-params.pem`) mounted and wired to `tls-dh-params-file`. `key` defaults to `dh-params.pem`. Secret-ref only — never inline (ADR-008). |
 
-`tls.secretName` and `tls.certManager` are mutually exclusive (set at most one). See [Security Architecture](07-security.md) §3.3 for the full TLS, mTLS, and rotation behaviour.
+`tls.secretName` and `tls.certManager` are mutually exclusive (set at most one). The hardening
+knobs (`authClients`, `ciphers`, `cipherSuites`, `dhParamsSecret`) apply regardless of which
+provisioning mode is chosen. See [Security Architecture](07-security.md) §3.3 for the full TLS,
+mTLS, and rotation behaviour.
 
 ### 2.9 Exporter (observability)
 
@@ -250,12 +281,66 @@ with `_`). See [Security Architecture](07-security.md) for the full ACL/secret d
 | `exporter.enabled` | `bool` | `true` | Toggle the sidecar. When on, the `_exporter` system user is provisioned. |
 | `exporter.image` | `string` | operator default exporter image | Override exporter image. |
 | `exporter.resources` | `corev1.ResourceRequirements` | none | Exporter container resources. |
+| `exporter.port` | `*int32` | `9121` | Exporter scrape port. Backs the named `metrics` container port and the static `PodMonitor`/`ServiceMonitor` target (`Minimum=1`, `Maximum=65535`). See [Observability](08-observability.md) §3. |
+| `exporter.scrapeInterval` | `string` | `20s` | Recommended scrape cadence templated into the `PodMonitor`/`ServiceMonitor`. Avoid sub-10s on large keyspaces (`INFO` competes with client traffic on the single thread). See [Observability](08-observability.md) §2.4. |
+| `exporter.tls` | `*ExporterTLSSpec` | `nil` | Metrics-over-TLS toggle. |
+| `exporter.tls.enabled` | `bool` | `false` | When `true`, the exporter serves `/metrics` over HTTPS using the cluster's cert family and the generated `PodMonitor`/`ServiceMonitor` switches to `scheme: https` with the matching `tlsConfig`. See [Observability](08-observability.md) §3.3. |
 
 ### 2.10 Availability (PodDisruptionBudget)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `podDisruptionBudget` | `enum{Managed,Disabled}` | `Managed` | When `Managed`, the operator creates a PDB sized to keep a quorum per shard. `Disabled` when managed externally or suppressed during maintenance. |
+
+### 2.10a Pod & service-account security (hardening)
+
+These M5/hardening fields let operators override the operator's hardened pod/container defaults and
+control ServiceAccount wiring on the **data pods**. All are propagated to each `ValkeyNode`. See
+[Security Architecture](07-security.md).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `podSecurityContext` | `*corev1.PodSecurityContext` | `nil` (operator applies a hardened default) | Pod-level security context for the data pods. Overrides the operator's hardened default when set. |
+| `containerSecurityContext` | `*corev1.SecurityContext` | `nil` (operator applies a hardened default) | Container-level security context for the Valkey server container. Overrides the operator's hardened default when set. |
+| `serviceAccountName` | `string` | `""` ⇒ operator-created default SA | ServiceAccount for the data pods. |
+| `automountServiceAccountToken` | `*bool` | `false` (hardened) | SA token automount on the data pods. Pointer so absence is distinct from explicit `false`; defaults to `false` (the chart's hardened default). |
+
+### 2.10b Environment
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `env` | `map[string]string` | `nil` | Simple key/value environment variables added to the Valkey server container (the common "just add an env var" escape hatch). |
+| `extraEnvVars` | `[]corev1.EnvVar` | `nil` | Full `corev1.EnvVar` entries (`valueFrom`, etc.) added to the Valkey server container, layered **after** `env`. |
+
+### 2.10c Expose (external client access)
+
+`spec.expose` (a `*ExposeSpec` pointer) controls how the cluster is reachable from outside the
+operator's headless Service. `nil` ⇒ in-cluster headless Service only. When `type` is
+`NodePort`/`LoadBalancer` the operator provisions the external Service(s).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `expose` | `*ExposeSpec` | `nil` (in-cluster headless Service only) | External-access configuration. |
+| `expose.type` | `enum{ClusterIP,NodePort,LoadBalancer}` | `ClusterIP` | Client Service type. `ClusterIP` keeps access in-cluster; `NodePort`/`LoadBalancer` expose the cluster externally. |
+| `expose.loadBalancerSourceRanges` | `[]string` | `nil` | Restricts client CIDRs when `type` is `LoadBalancer`. |
+| `expose.annotations` | `map[string]string` | `nil` | Annotations added to the generated external Service(s) (e.g. cloud LB controller hints). |
+| `expose.perPod` | `bool` | `false` | **PARTIAL / deferred.** Intended to create one external Service per `ValkeyNode` and set `cluster-announce-ip` so cluster-mode clients can follow `MOVED`/`ASK` redirects to per-pod external addresses. The field is part of the v1alpha1 API, but the per-pod `cluster-announce-ip` announce-IP discovery wiring is **deferred** in the as-built operator — treat as a known partial. |
+
+### 2.10d NetworkPolicy (hardening)
+
+`spec.networkPolicy` (a `*NetworkPolicySpec` pointer) toggles and customizes the operator-managed
+default-deny perimeter (see [Security Architecture](07-security.md) §7). It replaces the earlier
+interim annotation gate (`valkey.percona.com/network-policy` + `...-monitoring-namespace`). `enabled`
+is a pointer so absence is distinct from explicit `false`; the operator's default is **off unless
+explicitly enabled** (opt-in; recommended `true` in production).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `networkPolicy` | `*NetworkPolicySpec` | `nil` (no policy) | Operator-managed default-deny NetworkPolicy configuration. |
+| `networkPolicy.enabled` | `*bool` | `nil`/`false` ⇒ no policy created | Turns on the operator-managed default-deny NetworkPolicy plus the required data-plane/metrics flows. |
+| `networkPolicy.clientNamespaceSelectors` | `[]metav1.LabelSelector` | `nil` (same-namespace pods only) | Namespaces whose pods may reach the client port (6379). |
+| `networkPolicy.clientPodSelectors` | `[]metav1.LabelSelector` | `nil` (any pod in allowed namespaces) | Pods (in allowed namespaces) that may reach the client port (6379). |
+| `networkPolicy.monitoringNamespace` | `string` | `""` ⇒ the cluster's own namespace | Namespace whose Prometheus pods may scrape the exporter (9121). See [Observability](08-observability.md) §3.4. |
 
 ### 2.11 Backup (Percona addition — not in upstream)
 
@@ -405,10 +490,20 @@ Defaults are applied in two complementary places, matching Percona conventions:
 | `spec.replicas` | `1` | `CheckNSetDefaults` |
 | `spec.workloadType` | `StatefulSet` | marker |
 | `spec.persistence.reclaimPolicy` | `Retain` | marker |
-| `spec.exporter` | `{enabled:true}` | marker |
+| `spec.exporter.enabled` | `true` | marker |
+| `spec.exporter.port` | `9121` | marker |
+| `spec.exporter.scrapeInterval` | `20s` | marker |
+| `spec.exporter.tls.enabled` | `false` | marker |
 | `spec.podDisruptionBudget` | `Managed` | marker |
 | `spec.users[].enabled` | `true` | marker |
 | `spec.users[].nopass` / `.resetpass` | `false` | marker |
+| `spec.auth` | `{enabled:true, passwordSecret.name:<cluster>-users}` | `CheckNSetDefaults` (materialised when `nil`) |
+| `spec.auth.enabled` | `true` | marker + `CheckNSetDefaults` |
+| `spec.disableCommands` | `[FLUSHALL, FLUSHDB]` (only when `nil`; explicit `[]` preserved) | `CheckNSetDefaults` |
+| `spec.tls.authClients` | `optional` | marker |
+| `spec.tls.certManager.issuerRef.kind` | `Issuer` | marker |
+| `spec.expose.type` | `ClusterIP` | marker |
+| `spec.automountServiceAccountToken` | `false` | marker |
 | `spec.upgradeOptions.apply` | `Disabled` | `CheckNSetDefaults` |
 | `spec.crVersion` | operator `major.minor` | `CheckNSetDefaults` (auto-stamp if empty) |
 | `spec.image` | `percona/percona-valkey:<engine-tag>` | `CheckNSetDefaults` |
@@ -437,9 +532,15 @@ the kubebuilder comment). The contract is strictly directional.
 | `workloadType` | `enum{StatefulSet,Deployment}` | cluster (immutable) | One-replica STS or Deployment. |
 | `persistence` | `*PersistenceSpec` | cluster | Same immutability rules as the cluster (identical CEL on `ValkeyNodeSpec`). |
 | `resources`, `nodeSelector`, `affinity`, `tolerations`, `topologySpreadConstraints` | scheduling | cluster | Augmented with shard-aware selectors. |
-| `exporter` | `ExporterSpec` | cluster | Sidecar config. |
+| `exporter` | `ExporterSpec` | cluster | Sidecar config (`port`/`scrapeInterval`/`tls` included). |
 | `containers` | `[]corev1.Container` | cluster | Strategic-merge patch. |
-| `tls` | `*TLSConfig` | cluster | Cert secret ref. |
+| `tls` | `*TLSConfig` | cluster | Cert secret ref plus `authClients`/`ciphers`/`cipherSuites`/`dhParamsSecret`. |
+| `env` | `map[string]string` | cluster `spec.env` | Simple env vars for the server container. |
+| `extraEnvVars` | `[]corev1.EnvVar` | cluster `spec.extraEnvVars` | Full `EnvVar` entries, layered after `env`. |
+| `serviceAccountName` | `string` | cluster | SA for the data pod. |
+| `automountServiceAccountToken` | `*bool` | cluster | SA token automount (hardened `false` default). |
+| `podSecurityContext` | `*corev1.PodSecurityContext` | cluster | Pod-level security context (operator hardened default unless overridden). |
+| `containerSecurityContext` | `*corev1.SecurityContext` | cluster | Server-container security context (operator hardened default unless overridden). |
 | `config` | `map[string]string` | cluster `spec.config` | Verbatim copy; node applies the live-settable subset via `CONFIG SET`. |
 | `serverConfigMapName` | `string` | cluster | Name of the rendered `valkey-<cluster>` ConfigMap (scripts + config). |
 | `serverConfigHash` | `string` | cluster | SHA-256 of rendered `valkey.conf` **excluding live-settable keys**. Stamped into the pod-template annotation → drives rolling restart on change. |

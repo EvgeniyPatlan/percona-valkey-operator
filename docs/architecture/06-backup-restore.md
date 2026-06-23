@@ -215,17 +215,24 @@ spawn one-off Jobs rather than doing data movement in-process).
 blocking the foreground**; the engine reports progress via `INFO persistence`
 (`rdb_bgsave_in_progress`, `rdb_last_bgsave_status`, `rdb_changes_since_last_save`). The
 Job connects to the shard's **live primary** (resolved from `CLUSTER NODES`/`INFO`),
-authenticating as the internal **`_operator`** ACL user, issues `BGSAVE`, then **polls
-`rdb_last_bgsave_status:ok`** before reading the file.
+authenticating as the internal **`_backup`** ACL user (as-built:
+`pkg/controller/perconavalkeybackup/job.go` line 201, `AuthUser: naming.SystemUserBackup`),
+issues `BGSAVE`, then **polls `rdb_last_bgsave_status:ok`** before capturing the RDB via
+SYNC-as-replica (CR-10).
 
-> **ACL note (must align with [Security](07-security.md) §4).** `BGSAVE` is **not** a
-> `CLUSTER`/`CONFIG`/`INFO` command — it lives in the `@admin @dangerous` category — so the
-> least-privilege `_operator` grant described in the security doc must be widened to include
-> the exact persistence commands the backup/restore paths invoke: `+bgsave` (backup) and
-> `+config|set` (the restore re-enables AOF via `CONFIG SET appendonly yes`; restore also
-> uses `+cluster` for `MEET`/`ADDSLOTSRANGE`/`REPLICATE`). Granting only `~* +@all` would
-> violate least privilege; granting only `CLUSTER`/`CONFIG`/`INFO` would make `BGSAVE` fail
-> with `NOPERM`. The `_operator` ACL is therefore `+@admin`-narrowed to exactly these tokens.
+> **ACL note (must align with [Security](07-security.md) §4.3).** The backup Job authenticates
+> as **`_backup`** (not `_operator`), which carries the snapshot **and** replication grants
+> needed to trigger a server-side dump and pull each shard's RDB over the replication
+> protocol: `+bgsave +lastsave +save` (snapshot control) and `+sync +psync +replconf`
+> (SYNC-as-replica streaming), plus `+info +wait +ping`. The `_operator` user (cluster
+> orchestration) carries **none** of these — it was narrowed back to an orchestration-only
+> grant in the **M6 security refactor** (CR-10 resolved), so a compromised `_operator`
+> credential can no longer pull every shard's full dataset over replication. `BGSAVE` lives
+> in the `@admin @dangerous` category, so granting it requires the explicit `+bgsave` token
+> on `_backup`; granting only `~* +@all` would violate least privilege, and granting only
+> `CLUSTER`/`CONFIG`/`INFO` would make `BGSAVE` fail with `NOPERM`. `_backup` is therefore the
+> **only** system user that can read the full keyspace via replication (see the canonical
+> `backupRules` string in `pkg/valkey/acl.go`).
 
 > **Recommendation:** snapshot the **primary** of each shard (it owns the authoritative
 > slot data and the highest write offset). **Alternative:** snapshot a synced **replica**
@@ -234,17 +241,16 @@ authenticating as the internal **`_operator`** ACL user, issues `BGSAVE`, then *
 > primary-source for correctness simplicity; replica-source is a forward option behind
 > `containerOptions.preferReplica: true`.
 
-The Job reads the produced `dump.rdb` either by (a) mounting the primary's data PVC
-read-only is **not** possible while the pod owns it, so instead (b) the Job streams the file
-out of the running pod. **Recommendation:** the backup container execs into / co-locates a
-small reader that ships the just-written `dump.rdb` over the network via the engine's data
-path. Concretely, the `cmd/valkey-backup` binary uses the Valkey replication/`DUMP`-free
-path: after `BGSAVE` completes it copies the on-disk `dump.rdb` via a sidecar reader in the
-DB pod (the `cmd/healthcheck`/`cmd/peer-list` family of in-pod helpers establishes the
-precedent for in-pod binaries). The simplest robust mechanism is: the **DB pod runs a
-lightweight file-exposer** (part of the server image's entrypoint helpers) that the backup
-Job pulls `dump.rdb` from over an authenticated, optionally TLS, channel; the Job then
-streams it to object storage. This avoids a second full copy on the data PVC.
+The Job reads the produced RDB **over the replication protocol, not off the pod's
+filesystem**. Mounting the primary's data PVC read-only is not possible while the running
+pod owns it, so instead the `cmd/valkey-backup` binary **attaches to the shard's primary as
+a replica** (CR-10 resolved): it authenticates as `_backup`, issues a `SYNC` (the grant on
+`_backup` is exactly `+sync +psync +replconf` for this reason — see [Security](07-security.md)
+§4.3), and the primary streams its RDB snapshot down the replication link. The Job computes
+the SHA-256 while the bytes flow and pipes them straight to object storage, never persisting
+a second full copy on the data PVC. This SYNC-as-replica capture is why no in-pod
+file-exposer sidecar is needed and why the snapshot/replication grants live on `_backup`
+rather than `_operator`.
 
 ### 4.3 Ordered steps of a single-shard snapshot (performed by the Job per shard)
 
@@ -259,7 +265,8 @@ streams it to object storage. This avoids a second full copy on the data PVC.
 4. **Wait for completion.** Poll `INFO persistence` until `rdb_bgsave_in_progress:0` and
    `rdb_last_bgsave_status:ok`, bounded by `activeDeadlineSeconds`. On `err`, fail this
    shard.
-5. **Stream & upload.** Read `dump.rdb`, compute SHA-256 while streaming, multipart-upload
+5. **Stream & upload.** Capture the RDB **over the replication protocol** (`SYNC` as a
+   replica, authenticated as `_backup`), compute SHA-256 while streaming, multipart-upload
    to `<destination>/shard-<idx>/dump.rdb`. Optionally gzip (`containerOptions`).
 6. **Record per-shard status** into the manifest fragment: slot ranges, node ID, offset,
    size, sha256.
@@ -786,7 +793,7 @@ PXC `BackupDestination` `StorageTypePrefix`/`BucketAndPrefix`/`BackupName` helpe
 Object-store transport uses HTTPS by default; a custom CA bundle for private MinIO/Ceph can
 be supplied via the credentials Secret and mounted into the Job. (Engine-side TLS — the
 client/cluster-bus TLS the backup Job uses to talk to Valkey — is covered in
-[Security & TLS](07-security.md); the Job authenticates as `_operator` and uses the
+[Security & TLS](07-security.md); the Job authenticates as `_backup` and uses the
 cluster's TLS material when `spec.tls` is set, since with TLS enabled `port=0` and only
 `tls-port` is reachable.)
 

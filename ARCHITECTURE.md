@@ -1,5 +1,7 @@
 # Percona Operator for Valkey — Master Architecture
 
+> **As-built status (M0–M8 complete).** This document and its sibling subsystem docs were written during design; the operator is now **implemented and committed on `main`** (M0–M8). It describes the **built** system — all four controllers, security/observability hardening, backup/restore, smart updates, and Helm/kustomize/OLM distribution are in the tree. Two items are **deferred to GA**: the `v1` conversion webhook (only the webhook-cert startup gate is wired; the `ConvertTo`/`ConvertFrom`/`Hub` logic specified in [09 §6](docs/architecture/09-upgrades-versioning.md) is not built — the operator is v1alpha1-only) and the `expose.perPod` cluster-announce-ip wiring (partial). The roadmap in §5 and the deferral notes have been reconciled to the code; for GA sign-off status see [docs/implementation/GA-readiness.md](docs/implementation/GA-readiness.md).
+
 > **Executive summary.** The **Percona Operator for Valkey** (`percona-valkey-operator`) is a production-grade Kubernetes operator (Go 1.26, controller-runtime / Operator SDK) that declaratively runs, scales, secures, backs up, and upgrades [Valkey](https://valkey.io) clusters under API group **`valkey.percona.com/v1alpha1`**. It fuses two lineages: the upstream `valkey-operator`'s **two-CRD `cluster → node` topology model** (a user-facing `PerconaValkeyCluster` that incrementally drives one internal `ValkeyNode` per pod) and the **operational conventions of the Percona Operator-SDK trio** (PXC / PSMDB / PS) — `crVersion` discipline, version-service smart updates, a `Cluster`/`Backup`/`Restore` CRD trio, Helm + OLM distribution, and kuttl/envtest quality gates. This document is the navigable map of the architecture set: it gives the big picture, the load-bearing decisions, the topology modes, and the roadmap, then points into the twelve detailed subsystem documents for the field-level contracts and reconcile mechanics. **Read this first; everything else specialises it.**
 
 ---
@@ -219,15 +221,22 @@ The architecture set is twelve subsystem documents under `docs/architecture/`. R
 
 ## 5. Roadmap: alpha → beta → GA
 
-The API is intentionally shaped so deferred items (PITR fields, the `standalone` mode value, additional storage backends) slot in **without breaking changes** — graduation adds capability, it does not reshape the contract.
+The API is intentionally shaped so deferred items (PITR fields, the `standalone` mode value, additional storage backends, the `v1` conversion path) slot in **without breaking changes** — graduation adds capability, it does not reshape the contract.
 
-| Stage | API | Theme | Scope highlights |
-|-------|-----|-------|------------------|
-| **v1alpha1 (alpha)** | `valkey.percona.com/v1alpha1` | Cluster mode + foundations | cluster mode (primary) + replication mode (secondary); two-CRD model; RDB backup/restore to S3/GCS/Azure; TLS + ACL + RBAC; version-service smart updates; Helm + OLM + docs; 80%+ coverage. **No PITR, no standalone, no multi-region.** |
-| **beta** | `v1beta1` (conversion webhooks) | Harden & expand | standalone mode; richer observability (more metrics, default dashboards/alerts); cert hot-reload investigation; expanded e2e matrix; API stabilisation toward `v1`; performance tuning of rebalance/failover. |
-| **GA** | `v1` | Production guarantees | **PITR (AOF streaming)** delivered; stronger upgrade-rollback guarantees; multi-tenancy patterns; documented SLAs; OperatorHub `stable` channel; full compatibility matrix; long-term support. |
+**v1alpha1 is implemented (M0–M8 complete, 8 commits on `main`) — but not yet GA.** The fast, hermetic quality layer is green (build, envtest suites, ≥80% merged coverage, CI scan gates); GA is gated on cluster-only validation (kuttl e2e on Jenkins/GKE, chaos, perf) plus a set of process items and the two deferrals below. See [docs/implementation/GA-readiness.md](docs/implementation/GA-readiness.md) for the sign-off gate.
 
-The `v1alpha1 → v1` conversion mechanics (hub-and-spoke webhook, lossless round-trip, storage migration) are specified in [Upgrades & Version Management](docs/architecture/09-upgrades-versioning.md) §6.
+| Stage | API | Theme | Scope highlights | Status |
+|-------|-----|-------|------------------|--------|
+| **v1alpha1 (alpha)** | `valkey.percona.com/v1alpha1` | Cluster mode + foundations | cluster mode (primary) + replication mode (secondary); two-CRD model; RDB backup/restore to S3/GCS/Azure; auth (`requirepass`) + TLS/mTLS + ACL + RBAC + NetworkPolicy + pod/container security contexts + `expose` + `env`; version-service smart updates; Helm + kustomize + OLM + docs; 80%+ coverage. **No PITR, no standalone, no multi-region.** | **Built (M0–M8); not yet GA** |
+| **beta** | `v1beta1` (conversion webhooks) | Harden & expand | standalone mode; richer observability (more metrics, default dashboards/alerts); cert hot-reload investigation; expanded e2e matrix; API stabilisation toward `v1`; performance tuning of rebalance/failover. | Planned |
+| **GA** | `v1` | Production guarantees | **`v1` conversion webhook** delivered (the `ConvertTo`/`ConvertFrom`/`Hub` logic deferred from v1alpha1); **PITR (AOF streaming)**; `expose.perPod` cluster-announce-ip completed; stronger upgrade-rollback guarantees; multi-tenancy patterns; documented SLAs; OperatorHub `stable` channel; full compatibility matrix; long-term support. | Planned |
+
+### 5.1 Deferred from v1alpha1 (reconcile to code)
+
+- **`v1` conversion webhook — deferred to GA.** Only the webhook serving-cert startup gate is wired in `cmd/manager` (a guarded no-op unless `WEBHOOK_CERT_SECRET` is set). There is **no `v1` API package and no `ConvertTo`/`ConvertFrom`/`Hub()`** in the tree; the operator ships v1alpha1-only with no in-place API conversion. The hub-and-spoke mechanics in [Upgrades & Version Management](docs/architecture/09-upgrades-versioning.md) §6 are the **graduation plan**, not built code.
+- **`expose.perPod` cluster-announce-ip — partial.** Per-pod external Services are created, but the per-node `cluster-announce-ip` plumbing cluster-mode clients need to follow MOVED/ASK redirects to per-pod addresses is incomplete. Whole-cluster NodePort/LoadBalancer expose is unaffected.
+
+The `v1alpha1 → v1` conversion mechanics (hub-and-spoke webhook, lossless round-trip, storage migration) are specified as the **graduation plan** in [Upgrades & Version Management](docs/architecture/09-upgrades-versioning.md) §6.
 
 ---
 

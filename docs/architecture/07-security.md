@@ -123,10 +123,25 @@ tls.key  # server private key
 
 The metrics exporter sidecar is wired with `--tls-ca-cert-file=/tls/ca.crt` (grounding: `metrics_exporter.go`) so it scrapes the local node over TLS using the same CA.
 
-### 3.2 `tls-auth-clients`: recommendation and alternatives
+### 3.2 `tls-auth-clients` (mTLS) and cipher hardening
 
-- **Recommendation (default): `tls-auth-clients optional`** (matches upstream). The server presents and validates its own certificate and encrypts all traffic, but does not *require* a client certificate — clients still authenticate by ACL password over the encrypted channel. This gives encryption-in-transit and server authentication without forcing every application to provision a client cert, which is the right default for most deployments.
-- **Hardened alternative: `tls-auth-clients yes` (mutual TLS).** Exposed via `spec.tls.authClients: required`, this rejects any client that does not present a CA-signed certificate, adding network-level client authentication on top of ACL. Recommended for zero-trust environments where client identity must be cryptographically proven, at the cost of client-side cert lifecycle management. The operator surfaces this as a single enum field rather than raw config so it cannot be partially configured.
+`spec.tls.authClients` is an as-built enum (`TLSAuthClients`, `shared_types.go` lines 101–144) with three values, **defaulting to `optional`**:
+
+| `spec.tls.authClients` | Renders | Meaning |
+|------------------------|---------|---------|
+| `optional` (**default**, recommended) | `tls-auth-clients optional` | Server presents and validates its own cert and encrypts all traffic, but does **not** require a client certificate — clients still authenticate by ACL password over the encrypted channel. Encryption-in-transit + server authentication without forcing every application to provision a client cert; the right default for most deployments. |
+| `require` (hardened — mutual TLS) | `tls-auth-clients yes` | Rejects any client that does not present a CA-signed certificate, adding network-level client authentication on top of ACL. Recommended for zero-trust environments where client identity must be cryptographically proven, at the cost of client-side cert lifecycle management. |
+| `off` | `tls-auth-clients no` | No client-certificate validation at all. |
+
+The operator surfaces this as a single enum field rather than raw config so the policy cannot be partially configured.
+
+**Cipher / DH hardening (as-built `spec.tls`, `shared_types.go` lines 145–157), all optional FIPS/compliance knobs:**
+
+| Field | Renders | Behaviour when empty |
+|-------|---------|----------------------|
+| `spec.tls.ciphers` | `tls-ciphers` | Restricts the TLSv1.2-and-below cipher list (OpenSSL cipher-string syntax). Empty => server default. |
+| `spec.tls.cipherSuites` | `tls-ciphersuites` | Restricts the TLSv1.3 cipher suites (OpenSSL ciphersuites syntax). Empty => server default. |
+| `spec.tls.dhParamsSecret` | `tls-dh-params-file` | A `SecretRef` to a Secret holding Diffie-Hellman parameters (`dh-params.pem`), mounted into the pod. Empty => no explicit DH params. Secret-ref only — never inline (ADR-008). |
 
 Within the cluster, `tls-cluster yes` and `tls-replication yes` always apply mutual validation of the shared CA on the bus and replication channels regardless of the client-cert policy — gossip and replication are never optional-mTLS.
 
@@ -195,6 +210,8 @@ stateDiagram-v2
 For the secret-reference mode the same watch-and-roll mechanism applies; the user is responsible for rotating the referenced Secret before the certificate expires. A validating consideration (future): warn via Event when the leaf certificate is within N days of `notAfter`.
 
 ### 3.5 Conversion-webhook / cert-manager bootstrap ordering (upgrade race)
+
+> **As-built status (v1alpha1).** The `v1` promotion and its conversion webhook are **DEFERRED to GA** (see [Upgrades & Versioning](09-upgrades-versioning.md) §6). Today the operator serves **only** `v1alpha1`, so no conversion call is ever routed. The **only** piece of this section wired now is the **webhook serving-cert startup gate** scaffold — `waitForWebhookCertGate` in `cmd/manager/main.go` (the reusable bootstrap in `pkg/tls/webhookcert.go`, condition reason `WebhookCertNotReady`), which is a **guarded no-op unless `WEBHOOK_CERT_SECRET` is set**. The pre-flight, recovery, and the full three-layer behaviour below are the **forward design** for the GA conversion path, not current runtime behaviour; they ship with the `v1` handler.
 
 `PerconaValkeyCluster` is served at multiple API versions across the operator's life: the GA charter ships `v1alpha1`, and a future `v1` promotion is served *through a conversion webhook* so that objects stored at the old version are transparently converted on read. That webhook is itself served over TLS, with the serving certificate issued by **cert-manager** (a `Certificate` whose Secret backs the webhook server, plus a `caBundle` injected into the `CustomResourceDefinition`'s `conversion.webhook.clientConfig` via cert-manager's CA-injector). This creates a **bootstrap ordering hazard during an operator upgrade**, when `v1alpha1` and `v1` CRDs coexist and the API server must call the webhook to convert *every* stored object — including the operator's own reads of its CRs. If the webhook TLS material is not ready, those reads fail with a TLS/connection error, the reconcile cannot fetch the cluster CR, and the upgrade stalls cluster-wide.
 
@@ -308,7 +325,7 @@ flowchart LR
     mount --> srv
 ```
 
-Render order: user-defined users first, then the system users appended last (grounding: `reconcileUsersAcl` appends `createSystemUsersAcl` output after the loop).
+Render order (as-built `RenderUsersACL`, `pkg/valkey/acl.go` lines 145–160): the canonical **system users are emitted first** in fixed order (`_operator`, then `_exporter` when the exporter is enabled, then `_backup` — `SystemUsers()` order), followed by the user-defined lines **sorted by name**. Because user-defined names cannot start with `_` (CEL), there is no collision and the order is byte-stable either way; system-first is chosen so a same-named user-defined line could never shadow a system user (the engine resolves the last matching `user` line). The byte-stable output means the ACL-file hash only churns on a real ACL change (Section 4.2 / determinism rule).
 
 **Secret shape (single source of truth):** the operator builds a Kubernetes Secret of type **`valkey.io/acl`** named **`internal-<cluster>-acl`**, containing one data key whose value is the full ACL file (all `user ...` lines, deterministically ordered and rendered with each `#<sha256-hex...>` filled from the cluster's password material). It is mounted into every Valkey pod at **`/config/users/users.acl`** and referenced by the server config as **`aclfile /config/users/users.acl`**. Because the file is generated deterministically from the operator's Secret (sorted users, fixed rule order), the rendered output is byte-stable across reconciles, so the file hash is suitable for triggering rolling restarts only on real ACL changes.
 
@@ -318,17 +335,21 @@ The operator auto-creates three system users in `internal-<cluster>-system-passw
 
 > Valkey 9 syntax. Every grant carries an explicit `+`/`-` prefix. A **bare** command (e.g. `+cluster`) grants **all** of that command's subcommands; `+cluster|info` grants only that one subcommand. `resetchannels` and `resetkeys` flush the channel/key pattern lists so the user starts from *deny* (no keyspace, no pub/sub). A hashed password is the bare rule `#<sha256-hex>` (64 lowercase hex chars); `>` is for cleartext and must **not** be combined with `#`. Passwords are sourced from the operator-managed Secret and injected verbatim by the renderer at the `#<...>` position.
 
+These three lines are the **AS-BUILT** canonical strings emitted verbatim by `SystemUsers()` in `pkg/valkey/acl.go` (the `operatorRules` and `backupRules` constants, lines 59–78, and the `_exporter` literal, line 96):
+
 ```acl
 user _operator on #<sha256-hex-of-operator-password> resetchannels resetkeys -@all +cluster +config|get +config|set +info +client|setname +client|setinfo +replicaof +wait +ping
 user _exporter on #<sha256-hex-of-exporter-password> resetchannels resetkeys -@all +info +cluster|info +latency +ping
-user _backup   on #<sha256-hex-of-backup-password>   resetchannels resetkeys -@all +bgsave +lastsave +save +info +wait +ping
+user _backup   on #<sha256-hex-of-backup-password>   resetchannels resetkeys -@all +bgsave +lastsave +save +info +wait +ping +sync +psync +replconf
 ```
+
+> **M6 security refactor (trust-boundary narrowing, §10).** The replication + snapshot grants (`+bgsave +sync +psync +replconf`) that M5 had appended to `_operator` — so the backup Job could SYNC-as-replica while authenticating as `_operator` — have been **moved onto `_backup`**. The backup Job now authenticates as `_backup` (grounding: `pkg/controller/perconavalkeybackup/job.go` line 201, `AuthUser: naming.SystemUserBackup`), which performs the BGSAVE+SYNC itself, so `_operator` no longer carries any replication/snapshot grant and is narrowed back to the canonical **orchestration-only** floor. This resolves the M5 trust-boundary flag (CR-10): a compromised `_operator` credential can no longer pull every shard's full dataset over the replication protocol — `_backup` is now the **only** system user that can read the full keyspace via replication.
 
 **Rationale (one line per user):**
 
-- **`_operator`** — Cluster-orchestration user. Uses a **bare `+cluster`** because the operator drives nearly every CLUSTER subcommand (MEET, ADDSLOTSRANGE, SETSLOT, REPLICATE, FAILOVER, FORGET, MIGRATESLOTS, GETSLOTMIGRATIONS, NODES, INFO, SHARDS, MYID, RESET, plus 9.0's SYNCSLOTS for atomic slot migration); enumerating them invites silent drift as Valkey adds subcommands, while the still-tight `-@all` floor and `resetkeys`/`resetchannels` keep it off all keys and channels. Plus scoped `config|get`/`config|set`, `info`, `client|setname`/`client|setinfo`, `replicaof` (replication mode), `wait`, and `ping` — no broader `@admin`/`@dangerous` and no keyspace/pub-sub. A compromised operator credential cannot exfiltrate user data through this account.
-- **`_exporter`** — Read-only metrics scraper: `+info`, `+cluster|info` (single subcommand only, **not** bare `+cluster`, since it must never orchestrate), `+latency` (LATEST/HISTORY/RESET; read-only metrics in practice), and `+ping` for liveness; `-@all` + `resetkeys`/`resetchannels` deny everything else, all keys, and all channels. Created only when `spec.exporter.enabled` is true (grounding: skipped in `createSystemUsersAcl` when exporter disabled). Kept password-protected (not `nopass`) because the operator Secret already supplies a credential.
-- **`_backup`** — Server-side snapshot user: `+bgsave`, `+lastsave`, `+save`, `+info`, optional `+wait` (await replica acks before snapshotting), and `+ping`. RDB is produced server-side, so **no keyspace access** (`resetkeys`) and no channels (`resetchannels`); `-@all` blocks everything else including CONFIG and CLUSTER.
+- **`_operator`** — **Orchestration-only** cluster user (narrowed in M6 — no backup/replication grants). Uses a **bare `+cluster`** because the operator drives nearly every CLUSTER subcommand (MEET, ADDSLOTSRANGE, SETSLOT, REPLICATE, FAILOVER, FORGET, MIGRATESLOTS, GETSLOTMIGRATIONS, NODES, INFO, SHARDS, MYID, RESET, plus 9.0's SYNCSLOTS for atomic slot migration); enumerating them invites silent drift as Valkey adds subcommands, while the still-tight `-@all` floor and `resetkeys`/`resetchannels` keep it off all keys and channels. Plus scoped `config|get`/`config|set`, `info`, `client|setname`/`client|setinfo`, `replicaof` (replication mode), `wait`, and `ping` — **no** `+bgsave`/`+sync`/`+psync`/`+replconf`, no broader `@admin`/`@dangerous`, and no keyspace/pub-sub. A compromised operator credential cannot exfiltrate user data through this account, including over the replication protocol.
+- **`_exporter`** — Read-only metrics scraper: `+info`, `+cluster|info` (single subcommand only, **not** bare `+cluster`, since it must never orchestrate), `+latency` (LATEST/HISTORY/RESET; read-only metrics in practice), and `+ping` for liveness; `-@all` + `resetkeys`/`resetchannels` deny everything else, all keys, and all channels. It does **not** grant `+get`/`+eval`/`+scan` — strictly read-only introspection. Created only when `spec.exporter.enabled` is true (grounding: `SystemUsers(exporterEnabled)` skips the `_exporter` entry when the exporter is disabled, `acl.go` lines 93–98). Kept password-protected (not `nopass`) because the operator Secret already supplies a credential.
+- **`_backup`** — **Snapshot + replication** user (the only full-keyspace reader). Snapshot grants `+bgsave`, `+lastsave`, `+save`; connection/health + replica-ack grants `+info`, `+wait`, `+ping`; and the M6-appended **replication grants `+sync`, `+psync`, `+replconf`** so the backup Job can attach as a replica and stream each shard's RDB over the replication protocol (CR-10: the Job uses the legacy `SYNC`, with `+psync`/`+replconf` added for a PSYNC-based path). The replication tokens are appended after `+ping` so the original canonical substring stays contiguous. No CONFIG/CLUSTER and no channels (`resetchannels`); `-@all` blocks everything else. Because `_backup` can read the full keyspace via replication, any change to its grant string is a **CRITICAL** trust-boundary change requiring `security-reviewer` (§10).
 
 ### 4.4 Multi-password rotation, `resetpass`, `nopass`
 
@@ -353,6 +374,21 @@ Mitigations layer admission-time, runtime-detection, and operator recovery:
 - **CEL validation for command tokens where feasible.** The CRD's `XValidation` rules catch the cheap, statically-checkable mistakes at admission: the `^[@a-z0-9|_-]+$` pattern rejects whitespace, stray prefixes embedded mid-token, and obvious garbage, and the `_`-prefix rule protects the system users. This narrows the blast radius but **cannot** verify that a command/category actually exists in the target engine — full validation would require the engine's command table, which the API server does not have.
 - **Crash-loop detection surfaced as a condition.** The operator watches node-pod state and treats a pod that crash-loops immediately after an ACL change as an ACL-parse failure: it raises a `Degraded`/`UsersAclError` condition (the same reason already used elsewhere for ACL problems) plus a Warning Event naming the offending user/secret, so the failure reads as "bad ACL" rather than an opaque `CrashLoopBackOff`. Because the rendered file is byte-stable (Section 4.2), the operator can correlate the crash with the specific reconcile that changed the ACL hash.
 - **Revert-`spec.users` runbook.** Recovery is to revert the offending `spec.users` change (or remove the bad `permissions`/`RawAcl` escape-hatch token): the next reconcile re-renders a valid `users.acl`, the Secret updates, and the crash-looping pod recovers on its next restart. The runbook documents reverting the last edit (or `kubectl edit`/GitOps rollback) as the first response, and recommends staging risky ACL changes — especially raw `permissions` tokens — on a non-production cluster first, since there is no apply-time engine validation to catch them.
+
+### 4.6 Default-user password (`spec.auth` / `requirepass`)
+
+Distinct from the named `spec.users[]` ACL list (and the reserved `_operator`/`_exporter`/`_backup` system users), `spec.auth` (`AuthSpec`, `shared_types.go` lines 314–333) governs **only** the built-in `default` user — the engine's `requirepass` knob and the primary auth surface for clients that connect without selecting a named ACL user.
+
+| Field | Type | Default | Behaviour |
+|-------|------|---------|-----------|
+| `spec.auth.enabled` | `*bool` | `true` | When `true` the operator emits the `requirepass <password>` directive (operator-managed, override-proof) so the built-in `default` user requires the password from `passwordSecret`; when `false` no `requirepass` line is written and the `default` user is left passwordless. |
+| `spec.auth.passwordSecret` | `UserPasswordSecret` | `<cluster>-users` (derived in `CheckNSetDefaults`) | Secret holding the default user's password(s). Multiple `keys` enable Valkey multi-password rotation, exactly as for named users (Section 4.4). |
+
+The password is wired through the operator-managed **`requirepass`** config directive (grounding: `pkg/valkey/config.go` — `requirepass` is operator-managed and written override-proof). Crucially, `requirepass` is **live-settable**: the default-user password is rotated via `CONFIG SET requirepass`, so a password-only change must **never** roll the pods (it is excluded from the config hash, ADR-008, Section 4 of [Reconciliation](04-control-plane.md)). All password material is **Secret-ref only** (never inline, ADR-008), consistent with the no-hardcoded-secrets principle (Section 8.2). Leaving `spec.auth.enabled: false` makes the cluster reachable by the `default` user with no password — discouraged outside test, and only safe behind NetworkPolicy + TLS.
+
+### 4.7 Command hardening (`spec.disableCommands`)
+
+`spec.disableCommands` (`[]string`, `perconavalkeycluster_types.go` line 186) is a cluster-wide command-disable list applied to **every** Valkey node (it disables dangerous administrative/keyspace commands at the engine level, independent of per-user ACLs). This is defence-in-depth on top of the ACL model: even a user whose ACL would otherwise allow a command cannot invoke one that the engine has been told to disable. Use it to globally neutralise commands such as `FLUSHALL`, `FLUSHDB`, `KEYS`, `DEBUG`, or `CONFIG` regardless of which ACL user connects.
 
 ---
 
@@ -423,13 +459,24 @@ These carry `rbac.authorization.k8s.io/aggregate-to-*` labels so they compose wi
 
 The operator can render NetworkPolicies (opt-in via `spec.networkPolicy.enabled`, recommended `true` in production) that default-deny and then allow only the explicitly required flows (client, operator, intra-cluster bus, intra-cluster replication, metrics scrape, plus DNS and object-storage egress). Ports follow the Valkey contract: client `6379`, cluster bus `16379` (= client + 10000), metrics `9121` (exporter).
 
+The as-built `NetworkPolicySpec` (`shared_types.go` lines 369–392) — which replaces the M5 interim annotation gate (`valkey.percona.com/network-policy` + `...-monitoring-namespace`) — exposes these knobs:
+
+| `spec.networkPolicy` field | Type | Default when empty | Purpose |
+|----------------------------|------|--------------------|---------|
+| `enabled` | `*bool` | nil/false => **no policy is created** (opt-in; the pointer makes absence distinct from explicit false) | Turns on the default-deny perimeter plus the required data-plane/metrics flows. Recommended `true` in production. |
+| `clientNamespaceSelectors` | `[]metav1.LabelSelector` | empty => same-namespace pods only | Namespaces whose pods may reach the client port (6379). |
+| `clientPodSelectors` | `[]metav1.LabelSelector` | empty => any pod in the allowed namespaces | Pods (within allowed namespaces) that may reach the client port (6379). |
+| `monitoringNamespace` | `string` | empty => the cluster's own namespace | Namespace whose Prometheus pods may scrape the exporter (9121). |
+
+The rendered policies:
+
 | Policy | Direction | Peer | Port | Purpose |
 |--------|-----------|------|------|---------|
-| client-ingress | Ingress | namespaces/pods matching `spec.networkPolicy.clientSelectors` | TCP 6379 | Application data access (TLS + ACL) |
+| client-ingress | Ingress | namespaces/pods matching `spec.networkPolicy.clientNamespaceSelectors` / `clientPodSelectors` | TCP 6379 | Application data access (TLS + ACL) |
 | operator-ingress | Ingress | operator pod (label `app.kubernetes.io/name=valkey-operator`) | TCP 6379 | `_operator` orchestration |
 | bus-intra | Ingress + Egress | pods labeled `valkey.percona.com/cluster=<cluster>` | TCP 16379 | Cluster bus: gossip/heartbeat, config propagation, failover coordination (cluster-bus TLS) |
 | bus-data-intra | Ingress + Egress | same cluster pods | TCP 6379 | Replication stream + slot migration between nodes (replication TLS) |
-| metrics-ingress | Ingress | monitoring namespace / Prometheus selector | TCP 9121 | Scrape exporter |
+| metrics-ingress | Ingress | `spec.networkPolicy.monitoringNamespace` / Prometheus selector | TCP 9121 | Scrape exporter |
 | storage-egress | Egress | object-storage CIDR/FQDN | TCP 443 | Backup upload (backup Jobs) |
 | dns-egress | Egress | kube-dns | UDP/TCP 53 | Name resolution |
 
@@ -440,7 +487,7 @@ The default-deny perimeter and the only permitted flows:
 ```mermaid
 flowchart TB
     subgraph peers["Allowed peers"]
-        app["App clients<br/>(clientSelectors)"]
+        app["App clients<br/>(clientNamespaceSelectors / clientPodSelectors)"]
         op["valkey-operator pod"]
         prom["Prometheus / monitoring ns"]
     end
@@ -516,6 +563,17 @@ Server, exporter, backup, and sidecar containers run under a hardened, non-root 
 
 TLS and ACL mounts are read-only; the only writable persistent path is the data volume.
 
+The hardened context above is the operator's default; it is **overridable per cluster** through as-built CR fields (`perconavalkeycluster_types.go` lines 206–219):
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `spec.podSecurityContext` | `*corev1.PodSecurityContext` | Pod-level security context (e.g. `fsGroup`, `runAsNonRoot`, `seccompProfile`). |
+| `spec.containerSecurityContext` | `*corev1.SecurityContext` | Container-level context (e.g. `runAsUser`, `allowPrivilegeEscalation`, `capabilities`, `readOnlyRootFilesystem`). |
+| `spec.serviceAccountName` | `string` | The ServiceAccount the pods run under (default: the near-zero-privilege node SA, Section 6.2). |
+| `spec.automountServiceAccountToken` | `*bool` | Whether the API token is automounted into server pods (default `false`, Section 6.2). |
+
+These propagate to the per-node `ValkeyNode.spec` (the same fields appear on `valkeynode_types.go` lines 101–110), so the parent applies them before stamping the child. Overriding them to weaken the posture is the user's responsibility and is documented; the defaults satisfy the **restricted** Pod Security Standard.
+
 ### 9.2 Image provenance and signing
 
 - **Registry split (Percona convention):** GA images under `percona/*` (`percona/valkey-operator`, `percona/percona-valkey`, `percona/valkey-backup`, exporter image); dev/main builds under `perconalab/*`. Never ship a release built from a tree repointed at `perconalab/*:main-*` dev tags.
@@ -551,7 +609,7 @@ The mandatory pre-commit security checklist maps to concrete controls as follows
 
 ### Security review triggers honored
 
-Per the team security-review standard, the following areas in this design are flagged for mandatory `security-reviewer` agent review before implementation merges: ACL/user handling (Section 4), operator-to-node authentication (Section 5), Secret management (Section 8), and RBAC scope (Section 6). Any change to the `_operator` ACL grant, the RBAC verb set, or the TLS config keys is treated as a CRITICAL-severity change requiring explicit re-review, because each directly widens a trust boundary.
+Per the team security-review standard, the following areas in this design are flagged for mandatory `security-reviewer` agent review before implementation merges: ACL/user handling (Section 4), operator-to-node authentication (Section 5), Secret management (Section 8), and RBAC scope (Section 6). Any change to the `_operator` **or `_backup`** ACL grant string (`operatorRules`/`backupRules` in `pkg/valkey/acl.go`), the RBAC verb set, or the TLS config keys is treated as a CRITICAL-severity change requiring explicit re-review, because each directly widens a trust boundary — `_backup` especially, since it is the only system user that can read the full keyspace via replication (Section 4.3).
 
 ---
 
