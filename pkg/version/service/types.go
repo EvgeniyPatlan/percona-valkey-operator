@@ -30,7 +30,7 @@ import "context"
 // incompatible exporter or backup tool.
 type VersionSet struct {
 	// Engine is the fully-qualified Valkey server image tag (e.g.
-	// percona/percona-valkey:9.0.1-1).
+	// percona/valkey:9.0.1-1).
 	Engine string
 	// Exporter is the metrics-exporter image tag validated with Engine.
 	Exporter string

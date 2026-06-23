@@ -108,7 +108,7 @@ func vcReconciler(t *testing.T, cluster *valkeyv1alpha1.PerconaValkeyCluster) (*
 func recommended(engine, exporter, backup string) *service.VSResponse {
 	return &service.VSResponse{
 		Recommended: service.VersionSet{Engine: engine, Exporter: exporter, Backup: backup},
-		Latest:      service.VersionSet{Engine: "percona/percona-valkey:9.9.9-1"},
+		Latest:      service.VersionSet{Engine: "percona/valkey:9.9.9-1"},
 	}
 }
 
@@ -144,9 +144,9 @@ func TestApplyPolicyMapping(t *testing.T) {
 // ---- Disabled = no-op, zero client calls ------------------------------------
 
 func TestVersionCheckDisabledMakesNoCall(t *testing.T) {
-	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyDisabled, "percona/percona-valkey:8.0.1")
+	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyDisabled, "percona/valkey:8.0.1")
 	defer resetRegistry(cluster)
-	fr := &fakeResolver{resp: recommended("percona/percona-valkey:9.0.1-1", "", "")}
+	fr := &fakeResolver{resp: recommended("percona/valkey:9.0.1-1", "", "")}
 	installResolver(t, fr)
 	r, c, _ := vcReconciler(t, cluster)
 
@@ -157,12 +157,12 @@ func TestVersionCheckDisabledMakesNoCall(t *testing.T) {
 		t.Errorf("Disabled made %d client calls, want 0", fr.calls)
 	}
 	// spec.image unchanged on the live object and in storage.
-	if cluster.Spec.Image != "percona/percona-valkey:8.0.1" {
+	if cluster.Spec.Image != "percona/valkey:8.0.1" {
 		t.Errorf("Disabled mutated spec.image to %q", cluster.Spec.Image)
 	}
 	got := &valkeyv1alpha1.PerconaValkeyCluster{}
 	_ = c.Get(context.Background(), client.ObjectKeyFromObject(cluster), got)
-	if got.Spec.Image != "percona/percona-valkey:8.0.1" {
+	if got.Spec.Image != "percona/valkey:8.0.1" {
 		t.Errorf("Disabled persisted image %q, want unchanged", got.Spec.Image)
 	}
 }
@@ -170,10 +170,10 @@ func TestVersionCheckDisabledMakesNoCall(t *testing.T) {
 // ---- Recommended polls on window and mutates only-if-differs -----------------
 
 func TestVersionCheckRecommendedMutatesImage(t *testing.T) {
-	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/percona-valkey:8.0.1")
+	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/valkey:8.0.1")
 	defer resetRegistry(cluster)
 	fr := &fakeResolver{resp: recommended(
-		"percona/percona-valkey:9.0.1-1", "percona/valkey-exporter:1.2.0", "percona/valkey-backup:9.0.1-1")}
+		"percona/valkey:9.0.1-1", "percona/valkey-exporter:1.2.0", "percona/valkey-backup:9.0.1-1")}
 	installResolver(t, fr)
 	r, c, rec := vcReconciler(t, cluster)
 
@@ -206,7 +206,7 @@ func TestVersionCheckRecommendedMutatesImage(t *testing.T) {
 	}
 
 	// All three pins moved together (live object + storage).
-	if cluster.Spec.Image != "percona/percona-valkey:9.0.1-1" {
+	if cluster.Spec.Image != "percona/valkey:9.0.1-1" {
 		t.Errorf("live spec.image = %q, want recommended engine", cluster.Spec.Image)
 	}
 	if cluster.Spec.Exporter.Image != "percona/valkey-exporter:1.2.0" || cluster.Spec.Backup.Image != "percona/valkey-backup:9.0.1-1" {
@@ -216,7 +216,7 @@ func TestVersionCheckRecommendedMutatesImage(t *testing.T) {
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(cluster), got); err != nil {
 		t.Fatalf("get persisted: %v", err)
 	}
-	if got.Spec.Image != "percona/percona-valkey:9.0.1-1" {
+	if got.Spec.Image != "percona/valkey:9.0.1-1" {
 		t.Errorf("persisted spec.image = %q, want recommended engine", got.Spec.Image)
 	}
 	assertEvent(t, rec, ReasonNewEnginePinResolved)
@@ -225,11 +225,11 @@ func TestVersionCheckRecommendedMutatesImage(t *testing.T) {
 // ---- Latest selects the Latest set ------------------------------------------
 
 func TestVersionCheckLatestUsesLatestSet(t *testing.T) {
-	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyLatest, "percona/percona-valkey:8.0.1")
+	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyLatest, "percona/valkey:8.0.1")
 	defer resetRegistry(cluster)
 	resp := &service.VSResponse{
-		Recommended: service.VersionSet{Engine: "percona/percona-valkey:9.0.1-1"},
-		Latest:      service.VersionSet{Engine: "percona/percona-valkey:9.2.0-1"},
+		Recommended: service.VersionSet{Engine: "percona/valkey:9.0.1-1"},
+		Latest:      service.VersionSet{Engine: "percona/valkey:9.2.0-1"},
 	}
 	fr := &fakeResolver{resp: resp}
 	installResolver(t, fr)
@@ -242,7 +242,7 @@ func TestVersionCheckLatestUsesLatestSet(t *testing.T) {
 	if err := r.reconcileVersionCheck(context.Background(), cluster); err != nil {
 		t.Fatalf("error: %v", err)
 	}
-	if cluster.Spec.Image != "percona/percona-valkey:9.2.0-1" {
+	if cluster.Spec.Image != "percona/valkey:9.2.0-1" {
 		t.Errorf("Latest used %q, want the latest engine", cluster.Spec.Image)
 	}
 }
@@ -250,9 +250,9 @@ func TestVersionCheckLatestUsesLatestSet(t *testing.T) {
 // ---- literal version resolves through Recommended ---------------------------
 
 func TestVersionCheckLiteralResolvesViaRecommended(t *testing.T) {
-	cluster := vcCluster("9.0.1", "percona/percona-valkey:8.0.1")
+	cluster := vcCluster("9.0.1", "percona/valkey:8.0.1")
 	defer resetRegistry(cluster)
-	fr := &fakeResolver{resp: recommended("percona/percona-valkey:9.0.1-7", "", "")}
+	fr := &fakeResolver{resp: recommended("percona/valkey:9.0.1-7", "", "")}
 	installResolver(t, fr)
 	r, _, _ := vcReconciler(t, cluster)
 
@@ -266,7 +266,7 @@ func TestVersionCheckLiteralResolvesViaRecommended(t *testing.T) {
 	if fr.lastReq.Apply != "9.0.1" {
 		t.Errorf("literal apply not propagated: %q", fr.lastReq.Apply)
 	}
-	if cluster.Spec.Image != "percona/percona-valkey:9.0.1-7" {
+	if cluster.Spec.Image != "percona/valkey:9.0.1-7" {
 		t.Errorf("literal resolved %q, want the exact build tag", cluster.Spec.Image)
 	}
 }
@@ -274,9 +274,9 @@ func TestVersionCheckLiteralResolvesViaRecommended(t *testing.T) {
 // ---- same pin = no mutation, no event ---------------------------------------
 
 func TestVersionCheckSamePinIsNoop(t *testing.T) {
-	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/percona-valkey:9.0.1-1")
+	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/valkey:9.0.1-1")
 	defer resetRegistry(cluster)
-	fr := &fakeResolver{resp: recommended("percona/percona-valkey:9.0.1-1", "", "")}
+	fr := &fakeResolver{resp: recommended("percona/valkey:9.0.1-1", "", "")}
 	installResolver(t, fr)
 	r, _, rec := vcReconciler(t, cluster)
 
@@ -287,7 +287,7 @@ func TestVersionCheckSamePinIsNoop(t *testing.T) {
 	if err := r.reconcileVersionCheck(context.Background(), cluster); err != nil {
 		t.Fatalf("error: %v", err)
 	}
-	if cluster.Spec.Image != "percona/percona-valkey:9.0.1-1" {
+	if cluster.Spec.Image != "percona/valkey:9.0.1-1" {
 		t.Errorf("same pin changed image to %q", cluster.Spec.Image)
 	}
 	if hasEvent(rec, ReasonNewEnginePinResolved) {
@@ -298,7 +298,7 @@ func TestVersionCheckSamePinIsNoop(t *testing.T) {
 // ---- service down: skip, no degrade, VersionCheckFailed event ---------------
 
 func TestVersionCheckServiceDownIsTolerated(t *testing.T) {
-	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/percona-valkey:8.0.1")
+	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/valkey:8.0.1")
 	defer resetRegistry(cluster)
 	fr := &fakeResolver{err: errors.New("boom: " + service.ErrUnreachable.Error())}
 	installResolver(t, fr)
@@ -311,7 +311,7 @@ func TestVersionCheckServiceDownIsTolerated(t *testing.T) {
 	if err := r.reconcileVersionCheck(context.Background(), cluster); err != nil {
 		t.Fatalf("a poll failure must NOT return an error (E6): %v", err)
 	}
-	if cluster.Spec.Image != "percona/percona-valkey:8.0.1" {
+	if cluster.Spec.Image != "percona/valkey:8.0.1" {
 		t.Errorf("poll failure mutated image to %q, want unchanged", cluster.Spec.Image)
 	}
 	assertEvent(t, rec, ReasonVersionCheckFailed)
@@ -320,7 +320,7 @@ func TestVersionCheckServiceDownIsTolerated(t *testing.T) {
 // ---- no usable engine returned ----------------------------------------------
 
 func TestVersionCheckEmptyEngineSkips(t *testing.T) {
-	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/percona-valkey:8.0.1")
+	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/valkey:8.0.1")
 	defer resetRegistry(cluster)
 	fr := &fakeResolver{resp: recommended("", "x", "y")} // exporter/backup but no engine
 	installResolver(t, fr)
@@ -333,7 +333,7 @@ func TestVersionCheckEmptyEngineSkips(t *testing.T) {
 	if err := r.reconcileVersionCheck(context.Background(), cluster); err != nil {
 		t.Fatalf("error: %v", err)
 	}
-	if cluster.Spec.Image != "percona/percona-valkey:8.0.1" {
+	if cluster.Spec.Image != "percona/valkey:8.0.1" {
 		t.Errorf("empty engine mutated image to %q", cluster.Spec.Image)
 	}
 	assertEvent(t, rec, ReasonVersionCheckFailed)
@@ -342,9 +342,9 @@ func TestVersionCheckEmptyEngineSkips(t *testing.T) {
 // ---- once-per-window cadence ------------------------------------------------
 
 func TestVersionCheckPollsOncePerWindow(t *testing.T) {
-	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/percona-valkey:8.0.1")
+	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/valkey:8.0.1")
 	defer resetRegistry(cluster)
-	fr := &fakeResolver{resp: recommended("percona/percona-valkey:8.0.1", "", "")} // same pin to keep image stable
+	fr := &fakeResolver{resp: recommended("percona/valkey:8.0.1", "", "")} // same pin to keep image stable
 	installResolver(t, fr)
 	r, _, _ := vcReconciler(t, cluster)
 
@@ -375,9 +375,9 @@ func TestVersionCheckPollsOncePerWindow(t *testing.T) {
 // ---- Disabled / delete tears the window down --------------------------------
 
 func TestVersionCheckDisableRemovesWindow(t *testing.T) {
-	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/percona-valkey:8.0.1")
+	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/valkey:8.0.1")
 	defer resetRegistry(cluster)
-	fr := &fakeResolver{resp: recommended("percona/percona-valkey:8.0.1", "", "")}
+	fr := &fakeResolver{resp: recommended("percona/valkey:8.0.1", "", "")}
 	installResolver(t, fr)
 	r, _, _ := vcReconciler(t, cluster)
 
@@ -395,9 +395,9 @@ func TestVersionCheckDisableRemovesWindow(t *testing.T) {
 }
 
 func TestVersionCheckDeletionRemovesWindow(t *testing.T) {
-	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/percona-valkey:8.0.1")
+	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/valkey:8.0.1")
 	defer resetRegistry(cluster)
-	fr := &fakeResolver{resp: recommended("percona/percona-valkey:8.0.1", "", "")}
+	fr := &fakeResolver{resp: recommended("percona/valkey:8.0.1", "", "")}
 	installResolver(t, fr)
 	r, _, _ := vcReconciler(t, cluster)
 
@@ -418,10 +418,10 @@ func TestVersionCheckDeletionRemovesWindow(t *testing.T) {
 // ---- invalid cron is a loud error -------------------------------------------
 
 func TestVersionCheckInvalidCronErrors(t *testing.T) {
-	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/percona-valkey:8.0.1")
+	cluster := vcCluster(valkeyv1alpha1.UpgradeApplyRecommended, "percona/valkey:8.0.1")
 	cluster.Spec.UpgradeOptions.Schedule = "not a cron"
 	defer resetRegistry(cluster)
-	fr := &fakeResolver{resp: recommended("percona/percona-valkey:9.0.1-1", "", "")}
+	fr := &fakeResolver{resp: recommended("percona/valkey:9.0.1-1", "", "")}
 	installResolver(t, fr)
 	r, _, _ := vcReconciler(t, cluster)
 
@@ -438,12 +438,12 @@ func TestVersionCheckInvalidCronErrors(t *testing.T) {
 
 func TestEngineTagOf(t *testing.T) {
 	cases := map[string]string{
-		"percona/percona-valkey:9.0.1-1": "9.0.1-1",
-		"percona/percona-valkey:8.0":     "8.0",
-		"percona/percona-valkey":         "", // untagged
-		"":                               "",
-		"registry:5000/percona-valkey":   "", // host:port, no tag
-		"registry:5000/valkey:9.0.1":     "9.0.1",
+		"percona/valkey:9.0.1-1":       "9.0.1-1",
+		"percona/valkey:8.0":           "8.0",
+		"percona/valkey":               "", // untagged
+		"":                             "",
+		"registry:5000/percona-valkey": "", // host:port, no tag
+		"registry:5000/valkey:9.0.1":   "9.0.1",
 	}
 	for img, want := range cases {
 		if got := engineTagOf(img); got != want {

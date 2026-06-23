@@ -34,12 +34,12 @@ import (
 // latest engine/exporter/backup triples validated together (09 §3).
 const goldenBody = `{
   "recommended": {
-    "engine":   "percona/percona-valkey:9.0.1-1",
+    "engine":   "percona/valkey:9.0.1-1",
     "exporter": "percona/valkey-exporter:1.2.0",
     "backup":   "percona/valkey-backup:9.0.1-1"
   },
   "latest": {
-    "engine":   "percona/percona-valkey:9.2.0-1",
+    "engine":   "percona/valkey:9.2.0-1",
     "exporter": "percona/valkey-exporter:1.3.0",
     "backup":   "percona/valkey-backup:9.2.0-1"
   }
@@ -97,7 +97,7 @@ func TestResolveGoldenResponse(t *testing.T) {
 	}
 
 	wantRec := service.VersionSet{
-		Engine:   "percona/percona-valkey:9.0.1-1",
+		Engine:   "percona/valkey:9.0.1-1",
 		Exporter: "percona/valkey-exporter:1.2.0",
 		Backup:   "percona/valkey-backup:9.0.1-1",
 	}
@@ -105,7 +105,7 @@ func TestResolveGoldenResponse(t *testing.T) {
 		t.Errorf("Recommended = %+v, want %+v", resp.Recommended, wantRec)
 	}
 	wantLatest := service.VersionSet{
-		Engine:   "percona/percona-valkey:9.2.0-1",
+		Engine:   "percona/valkey:9.2.0-1",
 		Exporter: "percona/valkey-exporter:1.3.0",
 		Backup:   "percona/valkey-backup:9.2.0-1",
 	}
@@ -116,7 +116,7 @@ func TestResolveGoldenResponse(t *testing.T) {
 
 func TestResolveLiteralResponse(t *testing.T) {
 	// A literal apply resolves the exact build tag into Recommended (09 §3).
-	const body = `{"recommended":{"engine":"percona/percona-valkey:9.0.1-3","exporter":"e:1","backup":"b:1"}}`
+	const body = `{"recommended":{"engine":"percona/valkey:9.0.1-3","exporter":"e:1","backup":"b:1"}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, body)
 	}))
@@ -127,7 +127,7 @@ func TestResolveLiteralResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
 	}
-	if resp.Recommended.Engine != "percona/percona-valkey:9.0.1-3" {
+	if resp.Recommended.Engine != "percona/valkey:9.0.1-3" {
 		t.Errorf("Recommended.Engine = %q, want the resolved literal tag", resp.Recommended.Engine)
 	}
 }
@@ -253,7 +253,7 @@ func TestCheckAdaptsOntoResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Check returned error: %v", err)
 	}
-	if rec.ValkeyImage != "percona/percona-valkey:9.0.1-1" || rec.BackupImage != "percona/valkey-backup:9.0.1-1" {
+	if rec.ValkeyImage != "percona/valkey:9.0.1-1" || rec.BackupImage != "percona/valkey-backup:9.0.1-1" {
 		t.Errorf("Check(recommended) = %+v, want recommended triple", rec)
 	}
 
@@ -261,7 +261,7 @@ func TestCheckAdaptsOntoResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Check(latest) returned error: %v", err)
 	}
-	if latest.ValkeyImage != "percona/percona-valkey:9.2.0-1" {
+	if latest.ValkeyImage != "percona/valkey:9.2.0-1" {
 		t.Errorf("Check(latest).ValkeyImage = %q, want latest engine", latest.ValkeyImage)
 	}
 }

@@ -163,7 +163,7 @@ jobs:
             GIT_COMMIT=${{ steps.meta.outputs.git_commit }}
             BUILD_TIME=${{ steps.meta.outputs.build_time }}
 
-      # --- server image -> percona/percona-valkey:<version> ---
+      # --- server image -> percona/valkey:<version> ---
       # The engine base image is pinned by the server build pipeline; here we
       # only layer the in-pod sidecars onto whatever VALKEY_BASE_IMAGE resolves.
       - name: server image (engine + sidecars)
@@ -173,7 +173,7 @@ jobs:
           file: Dockerfile.sidecar
           platforms: linux/amd64,linux/arm64
           push: ${{ env.DO_PUSH == 'true' }}   # GA PUSH (human-approved env gate)
-          tags: percona/percona-valkey:${{ env.VERSION }}
+          tags: percona/valkey:${{ env.VERSION }}
           build-args: |
             VERSION=${{ env.VERSION }}
             GIT_COMMIT=${{ steps.meta.outputs.git_commit }}

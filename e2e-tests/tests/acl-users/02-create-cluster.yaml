@@ -26,7 +26,7 @@ commands:
       metadata:
         name: cluster1
       spec:
-        image: perconalab/percona-valkey:${VALKEY_VERSION}
+        image: percona/valkey:${VALKEY_VERSION}
         mode: cluster
         shards: 3
         replicas: 1

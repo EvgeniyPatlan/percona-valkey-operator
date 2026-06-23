@@ -24,7 +24,7 @@ func unitNode(name string) *valkeyv1alpha1.ValkeyNode {
 			},
 		},
 		Spec: valkeyv1alpha1.ValkeyNodeSpec{
-			Image:        "percona/percona-valkey:9.0",
+			Image:        "percona/valkey:9.0",
 			WorkloadType: valkeyv1alpha1.WorkloadStatefulSet,
 		},
 	}

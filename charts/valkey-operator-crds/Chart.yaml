@@ -9,7 +9,7 @@ keywords: [valkey, percona, crd, operator, kubernetes]
 home: https://docs.percona.com/percona-operator-for-valkey/
 icon: https://www.percona.com/sites/default/files/favicon.ico
 sources:
-  - https://github.com/percona/percona-valkey-operator
+  - https://github.com/percona/valkey-operator
 maintainers:
   - name: Percona
     url: https://www.percona.com

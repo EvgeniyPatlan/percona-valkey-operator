@@ -1,5 +1,5 @@
 // Command healthcheck is the liveness/readiness probe SIDECAR baked into the DB
-// image (percona/percona-valkey). Readiness checks cluster_state:ok and (for
+// image (percona/valkey). Readiness checks cluster_state:ok and (for
 // replicas) master_link_status:up via local INFO/CLUSTER INFO; liveness checks
 // the server responds.
 //

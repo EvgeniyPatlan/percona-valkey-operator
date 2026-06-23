@@ -46,7 +46,7 @@ func makeCluster(name, namespace string, shards int32) *valkeyv1alpha1.PerconaVa
 			Mode:     valkeyv1alpha1.ModeCluster,
 			Shards:   shards,
 			Replicas: 1,
-			Image:    "percona/percona-valkey:9.0",
+			Image:    "percona/valkey:9.0",
 		},
 	}
 }

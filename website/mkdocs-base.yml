@@ -13,8 +13,8 @@ site_name: Percona Operator for Valkey
 site_description: Run, scale, secure, back up, and upgrade Valkey on Kubernetes — declaratively.
 site_author: Percona
 site_url: https://docs.percona.com/percona-operator-for-valkey/
-repo_url: https://github.com/percona/percona-valkey-operator
-repo_name: percona/percona-valkey-operator
+repo_url: https://github.com/percona/valkey-operator
+repo_name: percona/valkey-operator
 edit_uri: edit/main/website/docs/
 copyright: Percona LLC
 

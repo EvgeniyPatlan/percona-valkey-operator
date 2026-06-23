@@ -33,5 +33,5 @@ date:
   0_1_0: "2026-06-22"
 
 # --- static link bases (used by main.py macros + raw links) ------------------
-operatorrepo: https://github.com/percona/percona-valkey-operator
+operatorrepo: https://github.com/percona/valkey-operator
 helmrepo: https://percona.github.io/percona-helm-charts/

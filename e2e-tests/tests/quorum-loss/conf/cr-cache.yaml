@@ -10,7 +10,7 @@ kind: PerconaValkeyCluster
 metadata:
   name: ${CLUSTER_NAME}
 spec:
-  image: perconalab/percona-valkey:${VALKEY_VERSION}
+  image: percona/valkey:${VALKEY_VERSION}
   mode: cluster
   shards: 1
   replicas: 1

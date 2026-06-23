@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Command valkey-backup is the backup/restore SIDECAR that runs in a Kubernetes
-// Job pod inside the DB image (percona/percona-valkey), not the operator image.
+// Job pod inside the DB image (percona/valkey), not the operator image.
 // It has three modes:
 //
 //   - backup  (default): resolve each shard's live primary from CLUSTER NODES,

@@ -23,14 +23,14 @@ var raw string // seed: "0.1.0"
 
 const (
 	// defaultServerImageRepo is the GA Valkey server image repository.
-	defaultServerImageRepo = "percona/percona-valkey"
+	defaultServerImageRepo = "percona/valkey"
 	// defaultBackupImageRepo is the GA Valkey backup-tool image repository.
 	defaultBackupImageRepo = "percona/valkey-backup"
 	// defaultEngineTag is the engine image tag the operator pins by default. It
 	// is the major Valkey engine line shipped with this operator; the version
 	// service overrides it when upgradeOptions.apply != Disabled. (Real GA tags
 	// are baked in by `make release` in M7; this is the dev default.)
-	defaultEngineTag = "8.0"
+	defaultEngineTag = "9.1.0"
 )
 
 // gitVersion may be overridden at build time via -ldflags

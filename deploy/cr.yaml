@@ -8,7 +8,7 @@ metadata:
   namespace: valkey
 spec:
   crVersion: "0.1"
-  image: perconalab/percona-valkey:main
+  image: percona/valkey:9.1.0
   imagePullSecrets:
     - name: percona-registry
   mode: cluster

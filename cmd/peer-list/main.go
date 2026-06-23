@@ -1,5 +1,5 @@
 // Command peer-list is the peer-discovery SIDECAR baked into the DB image
-// (percona/percona-valkey). It resolves the headless Service endpoints to
+// (percona/valkey). It resolves the headless Service endpoints to
 // stable pod DNS/IPs so a newly-started node can locate peers for the
 // operator's batch CLUSTER MEET.
 //

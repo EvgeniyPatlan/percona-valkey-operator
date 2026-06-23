@@ -109,8 +109,8 @@ var _ = ginkgo.Describe("PerconaValkeyCluster M6 smart engine update", func() {
 	)
 
 	const (
-		baseImage = "percona/percona-valkey:9.0.0"
-		newImage  = "percona/percona-valkey:9.0.1" // patch-forward within the 9.0 line.
+		baseImage = "percona/valkey:9.0.0"
+		newImage  = "percona/valkey:9.0.1" // patch-forward within the 9.0 line.
 	)
 
 	ginkgo.BeforeEach(func() {
@@ -208,7 +208,7 @@ var _ = ginkgo.Describe("PerconaValkeyCluster M6 smart engine update", func() {
 
 	ginkgo.It("refuses an engine feature-line downgrade with Degraded/UnsupportedDowngrade and no roll (GO-6.12)", func() {
 		cluster := makeCluster("down", ns, 2)
-		cluster.Spec.Image = "percona/percona-valkey:9.0.0"
+		cluster.Spec.Image = "percona/valkey:9.0.0"
 		gomega.Expect(k8sClient.Create(testCtx, cluster)).To(gomega.Succeed())
 		key := client.ObjectKeyFromObject(cluster)
 		reconcileUntilReady(r, key, 40)
@@ -217,7 +217,7 @@ var _ = ginkgo.Describe("PerconaValkeyCluster M6 smart engine update", func() {
 		r.RecorderForTest(rec)
 
 		// Attempt a feature-line downgrade 9.0 -> 8.0: must be refused.
-		downImage := "percona/percona-valkey:8.0.1"
+		downImage := "percona/valkey:8.0.1"
 		setImage(key, downImage)
 
 		for i := 0; i < 8; i++ {

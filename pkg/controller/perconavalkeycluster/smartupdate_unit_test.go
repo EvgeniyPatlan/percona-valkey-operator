@@ -73,13 +73,13 @@ func TestParseEngineVersion(t *testing.T) {
 		major, minor, patch int
 		known               bool
 	}{
-		{"percona/percona-valkey:9.0.1-2", 9, 0, 1, true},
-		{"percona/percona-valkey:9.0", 9, 0, 0, true},
-		{"percona/percona-valkey:8.0.3", 8, 0, 3, true},
-		{"percona/percona-valkey:7.2", 7, 2, 0, true},
+		{"percona/valkey:9.0.1-2", 9, 0, 1, true},
+		{"percona/valkey:9.0", 9, 0, 0, true},
+		{"percona/valkey:8.0.3", 8, 0, 3, true},
+		{"percona/valkey:7.2", 7, 2, 0, true},
 		{"valkey:9", 9, 0, 0, true},
-		{"percona/percona-valkey:latest", 0, 0, 0, false},
-		{"percona/percona-valkey", 0, 0, 0, false},            // repo only -> tag "percona-valkey", not numeric
+		{"percona/valkey:latest", 0, 0, 0, false},
+		{"percona/valkey", 0, 0, 0, false},                    // repo only -> tag "percona-valkey", not numeric
 		{"9.0.2", 9, 0, 2, true},                              // bare tag, no repo
 		{"registry:5000/percona-valkey:9.2.0", 9, 2, 0, true}, // registry port must not confuse the tag split
 	}
@@ -102,7 +102,7 @@ func TestParseEngineVersion(t *testing.T) {
 
 func TestClassifyEngineChange(t *testing.T) {
 	t.Parallel()
-	const repo = "percona/percona-valkey:"
+	const repo = "percona/valkey:"
 	cases := []struct {
 		name          string
 		current, next string
@@ -195,7 +195,7 @@ func TestSmartUpdateAllowedHealthGates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// No Lease seeded -> backupRunning is false (fail-open NotFound).
 			r := newGateReconciler(t)
-			c := readyCluster("percona/percona-valkey:9.0")
+			c := readyCluster("percona/valkey:9.0")
 			state := tc.mutate(c, fullCoverageState())
 			ok, reason := r.smartUpdateAllowed(context.Background(), c, state)
 			if ok != tc.wantOK || reason != tc.wantReason {
@@ -207,7 +207,7 @@ func TestSmartUpdateAllowedHealthGates(t *testing.T) {
 
 func TestSmartUpdateGatedWhileBackupRunning(t *testing.T) {
 	t.Parallel()
-	c := readyCluster("percona/percona-valkey:9.0")
+	c := readyCluster("percona/valkey:9.0")
 	// Seed a fresh Lease held by a backup so IsBackupRunning reports busy.
 	lease := &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{Name: perconavalkeybackup.LeaseName(c.Name), Namespace: c.Namespace},
@@ -231,7 +231,7 @@ func TestSmartUpdateGatedWhileBackupRunning(t *testing.T) {
 
 func TestBackupRunningFailsOpenOnMissingLease(t *testing.T) {
 	t.Parallel()
-	c := readyCluster("percona/percona-valkey:9.0")
+	c := readyCluster("percona/valkey:9.0")
 	r := newGateReconciler(t) // no Lease seeded.
 	if r.backupRunning(context.Background(), c) {
 		t.Fatal("missing Lease must fail open to no-backup-running")
@@ -240,10 +240,10 @@ func TestBackupRunningFailsOpenOnMissingLease(t *testing.T) {
 
 func TestApplyEngineDowngradePolicyRefusesFeatureLineDowngrade(t *testing.T) {
 	t.Parallel()
-	c := readyCluster("percona/percona-valkey:8.0.1") // desired = older line.
+	c := readyCluster("percona/valkey:8.0.1") // desired = older line.
 	r := newGateReconciler(t)
 
-	blocked, reason := r.applyEngineDowngradePolicy(c, "percona/percona-valkey:9.0.2")
+	blocked, reason := r.applyEngineDowngradePolicy(c, "percona/valkey:9.0.2")
 	if !blocked || reason != ReasonUnsupportedDowngrade {
 		t.Fatalf("applyEngineDowngradePolicy = (%v,%q), want (true,%q)", blocked, reason, ReasonUnsupportedDowngrade)
 	}
@@ -255,9 +255,9 @@ func TestApplyEngineDowngradePolicyRefusesFeatureLineDowngrade(t *testing.T) {
 func TestApplyEngineDowngradePolicyAllowsForward(t *testing.T) {
 	t.Parallel()
 	// Forward jump 8.0 -> 9.0: allowed (not blocked), no Degraded.
-	c := readyCluster("percona/percona-valkey:9.0.0")
+	c := readyCluster("percona/valkey:9.0.0")
 	r := newGateReconciler(t)
-	if blocked, _ := r.applyEngineDowngradePolicy(c, "percona/percona-valkey:8.0.1"); blocked {
+	if blocked, _ := r.applyEngineDowngradePolicy(c, "percona/valkey:8.0.1"); blocked {
 		t.Fatal("a forward engine jump must not block")
 	}
 	if conditionTrue(c, CondDegraded) {
@@ -268,11 +268,11 @@ func TestApplyEngineDowngradePolicyAllowsForward(t *testing.T) {
 func TestPendingEngineChangeDetectsConfigOnlyVsEngineRoll(t *testing.T) {
 	t.Parallel()
 	// Config-only roll: every node already on spec.image -> changing=false.
-	c := readyCluster("percona/percona-valkey:9.0.0")
+	c := readyCluster("percona/valkey:9.0.0")
 	cfgNode := &valkeyv1alpha1.ValkeyNode{}
 	cfgNode.Name, cfgNode.Namespace = "u-0-0", c.Namespace
 	cfgNode.Labels = map[string]string{"valkey.percona.com/cluster": c.Name}
-	cfgNode.Spec.Image = "percona/percona-valkey:9.0.0"
+	cfgNode.Spec.Image = "percona/valkey:9.0.0"
 	r := newGateReconciler(t, cfgNode)
 	_, changing, err := r.pendingEngineChange(context.Background(), c)
 	if err != nil || changing {
@@ -280,25 +280,25 @@ func TestPendingEngineChangeDetectsConfigOnlyVsEngineRoll(t *testing.T) {
 	}
 
 	// Engine roll: a node still on the old image -> changing=true with that image.
-	c2 := readyCluster("percona/percona-valkey:9.0.1")
+	c2 := readyCluster("percona/valkey:9.0.1")
 	engNode := &valkeyv1alpha1.ValkeyNode{}
 	engNode.Name, engNode.Namespace = "v-0-0", c2.Namespace
 	engNode.Labels = map[string]string{"valkey.percona.com/cluster": c2.Name}
-	engNode.Spec.Image = "percona/percona-valkey:9.0.0"
+	engNode.Spec.Image = "percona/valkey:9.0.0"
 	r2 := newGateReconciler(t, engNode)
 	current, changing, err := r2.pendingEngineChange(context.Background(), c2)
-	if err != nil || !changing || current != "percona/percona-valkey:9.0.0" {
+	if err != nil || !changing || current != "percona/valkey:9.0.0" {
 		t.Fatalf("engine roll: pendingEngineChange = (%q,%v,%v), want (old-image,true,nil)", current, changing, err)
 	}
 }
 
 func TestReconcileSmartUpdatePermitsHealthyForwardRoll(t *testing.T) {
 	t.Parallel()
-	c := readyCluster("percona/percona-valkey:9.0.0")
+	c := readyCluster("percona/valkey:9.0.0")
 	node := &valkeyv1alpha1.ValkeyNode{}
 	node.Name, node.Namespace = "u-0-0", c.Namespace
 	node.Labels = map[string]string{"valkey.percona.com/cluster": c.Name}
-	node.Spec.Image = "percona/percona-valkey:8.0.1" // pending forward roll.
+	node.Spec.Image = "percona/valkey:8.0.1" // pending forward roll.
 	r := newGateReconciler(t, node)
 
 	allowed, reason := r.reconcileSmartUpdate(context.Background(), c, fullCoverageState())
@@ -312,12 +312,12 @@ func TestReconcileSmartUpdateDowngradePrecedesGate(t *testing.T) {
 	// Cluster is NOT ready AND the change is a downgrade: the downgrade refusal
 	// must win (it is evaluated before the health gate) so the surfaced reason is
 	// UnsupportedDowngrade, not a gate reason.
-	c := readyCluster("percona/percona-valkey:8.0.1")
+	c := readyCluster("percona/valkey:8.0.1")
 	setCondition(c, CondReady, metav1.ConditionFalse, ReasonReconciling, "progressing")
 	node := &valkeyv1alpha1.ValkeyNode{}
 	node.Name, node.Namespace = "u-0-0", c.Namespace
 	node.Labels = map[string]string{"valkey.percona.com/cluster": c.Name}
-	node.Spec.Image = "percona/percona-valkey:9.0.2"
+	node.Spec.Image = "percona/valkey:9.0.2"
 	r := newGateReconciler(t, node)
 
 	allowed, reason := r.reconcileSmartUpdate(context.Background(), c, fullCoverageState())
@@ -331,11 +331,11 @@ func TestReconcileSmartUpdateConfigOnlyRollIsUngated(t *testing.T) {
 	// Every node already on spec.image -> a config-only roll. The smart-update
 	// gate must NOT engage even while a backup Lease is held: only an engine-image
 	// roll is gated (two-axis separation). Seed a held Lease to prove it.
-	c := readyCluster("percona/percona-valkey:9.0.0")
+	c := readyCluster("percona/valkey:9.0.0")
 	node := &valkeyv1alpha1.ValkeyNode{}
 	node.Name, node.Namespace = "u-0-0", c.Namespace
 	node.Labels = map[string]string{"valkey.percona.com/cluster": c.Name}
-	node.Spec.Image = "percona/percona-valkey:9.0.0"
+	node.Spec.Image = "percona/valkey:9.0.0"
 	now := metav1.NewMicroTime(time.Now())
 	holder := "backup/" + c.Namespace + "/bk"
 	dur := int32(30)
@@ -354,10 +354,10 @@ func TestReconcileSmartUpdateConfigOnlyRollIsUngated(t *testing.T) {
 func TestApplyEngineDowngradePolicyEmitsJumpAndFloorEvents(t *testing.T) {
 	t.Parallel()
 	// 8.0 -> 9.2 is a multi-minor jump (warned, not blocked).
-	c := readyCluster("percona/percona-valkey:9.2.0")
+	c := readyCluster("percona/valkey:9.2.0")
 	rec := events.NewFakeRecorder(20)
 	r := &Reconciler{Client: newGateReconciler(t).Client, scheme: aclTestScheme(t), recorder: rec}
-	if blocked, _ := r.applyEngineDowngradePolicy(c, "percona/percona-valkey:8.0.0"); blocked {
+	if blocked, _ := r.applyEngineDowngradePolicy(c, "percona/valkey:8.0.0"); blocked {
 		t.Fatal("a multi-minor jump must not block")
 	}
 	if !drainContains(rec, ReasonEngineJumpWarning) {
@@ -365,10 +365,10 @@ func TestApplyEngineDowngradePolicyEmitsJumpAndFloorEvents(t *testing.T) {
 	}
 
 	// Resolving a sub-9.0 engine emits the MigrateSlotsUnsupported advisory.
-	c2 := readyCluster("percona/percona-valkey:8.0.1")
+	c2 := readyCluster("percona/valkey:8.0.1")
 	rec2 := events.NewFakeRecorder(20)
 	r2 := &Reconciler{Client: newGateReconciler(t).Client, scheme: aclTestScheme(t), recorder: rec2}
-	if blocked, _ := r2.applyEngineDowngradePolicy(c2, "percona/percona-valkey:8.0.0"); blocked {
+	if blocked, _ := r2.applyEngineDowngradePolicy(c2, "percona/valkey:8.0.0"); blocked {
 		t.Fatal("a same-line sub-9.0 patch move must not block")
 	}
 	if !drainContains(rec2, ReasonMigrateSlotsUnsupported) {

@@ -39,7 +39,7 @@ tests:
           value: StatefulSet
       - equal:
           path: spec.image
-          value: "percona/percona-valkey:8.0.2"
+          value: "percona/valkey:9.1.0"
       - equal:
           path: spec.podDisruptionBudget
           value: Managed

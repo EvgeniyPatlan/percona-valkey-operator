@@ -13,7 +13,7 @@ metadata:
       Percona Operator for Valkey deploys and manages production-grade Valkey
       clusters (cluster and standalone modes) on Kubernetes, with TLS, ACL users,
       scheduled backups, Prometheus metrics, and Percona smart updates.
-    repository: https://github.com/percona/percona-valkey-operator
+    repository: https://github.com/percona/valkey-operator
     support: Percona
     # operator-sdk regenerates alm-examples from config/samples; kept in sync by hand here
     # because operator-sdk is absent in the authoring environment (CI re-renders it).
@@ -25,7 +25,7 @@ metadata:
           "metadata": { "name": "cluster1" },
           "spec": {
             "crVersion": "0.1",
-            "image": "percona/percona-valkey:8.0.2",
+            "image": "percona/valkey:8.0.2",
             "mode": "cluster",
             "shards": 3,
             "replicas": 2,
@@ -79,7 +79,7 @@ spec:
     - percona
   links:
     - name: Source Code
-      url: https://github.com/percona/percona-valkey-operator
+      url: https://github.com/percona/valkey-operator
     - name: Documentation
       url: https://docs.percona.com/percona-operator-for-valkey/
     - name: Percona

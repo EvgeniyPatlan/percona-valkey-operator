@@ -345,7 +345,7 @@ func isMultiLineJump(cur, tgt engineVersion) bool {
 }
 
 // parseEngineVersion extracts the numeric major.minor.patch of a Valkey engine
-// image tag (e.g. "percona/percona-valkey:9.0.1-2" -> 9.0.1). It takes the part
+// image tag (e.g. "percona/valkey:9.0.1-2" -> 9.0.1). It takes the part
 // after the last ':' (the tag), strips any '-<build>' suffix, and parses up to
 // three dot-separated numeric components. A tag with no leading numeric
 // component (e.g. "latest") yields known=false so the policy treats it as

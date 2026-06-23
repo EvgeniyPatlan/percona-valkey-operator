@@ -46,7 +46,7 @@ var _ = ginkgo.Describe("ValkeyNode controller via the shared manager", func() {
 				},
 			},
 			Spec: valkeyv1alpha1.ValkeyNodeSpec{
-				Image: "percona/percona-valkey:9.0", WorkloadType: valkeyv1alpha1.WorkloadStatefulSet,
+				Image: "percona/valkey:9.0", WorkloadType: valkeyv1alpha1.WorkloadStatefulSet,
 				ServerConfigMapName: "valkey-mycluster", ServerConfigHash: "h",
 			},
 		}
@@ -102,7 +102,7 @@ var _ = ginkgo.Describe("ValkeyNode controller via the shared manager", func() {
 				},
 			},
 			Spec: valkeyv1alpha1.ValkeyNodeSpec{
-				Image: "percona/percona-valkey:9.0", WorkloadType: valkeyv1alpha1.WorkloadStatefulSet,
+				Image: "percona/valkey:9.0", WorkloadType: valkeyv1alpha1.WorkloadStatefulSet,
 				ServerConfigMapName: "valkey-mycluster", ServerConfigHash: "h",
 				Persistence: &valkeyv1alpha1.PersistenceSpec{Size: resource.MustParse("1Gi")},
 			},

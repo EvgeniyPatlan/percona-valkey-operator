@@ -32,7 +32,7 @@ workloadType: StatefulSet
 pause: false
 
 # --- spec.image (server) + pull secrets ---
-image: "percona/percona-valkey:8.0.2"
+image: "percona/valkey:9.1.0"
 imagePullSecrets: []
 #  - name: percona-registry
 
