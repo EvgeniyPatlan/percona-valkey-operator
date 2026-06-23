@@ -8246,6 +8246,21 @@ spec:
                       backupName is the backup-set name that derives the object keys
                       (<cluster>/<backupName>/...).
                     type: string
+                  clusterName:
+                    description: |-
+                      clusterName is the SOURCE cluster name the backup-set was taken from; together
+                      with backupName it derives the object keys (<clusterName>/<backupName>/...).
+                      The cluster controller resolves it from the restore markers (06 §7.4) so the
+                      node controller can render the VALKEY_BACKUP_CLUSTER env without re-reading the
+                      restore intent.
+                    type: string
+                  credentialsSecret:
+                    description: |-
+                      credentialsSecret is the object-store credentials Secret (cloud-SDK env names)
+                      the cluster controller resolves from the named storage; the seed init container
+                      mounts it via EnvFrom so the download authenticates to the backend. The operator
+                      never reads it (06 §8.2).
+                    type: string
                   shardIndex:
                     description: |-
                       shardIndex is the zero-based shard index this node seeds (its RDB fragment in
@@ -8258,6 +8273,80 @@ spec:
                       storage is the named backup storage key (in spec.backup.storages) the RDB is
                       downloaded from.
                     type: string
+                  storageSpec:
+                    description: |-
+                      storageSpec is the resolved backend type + coordinates (bucket/prefix/region/
+                      endpoint) the cluster controller copies from spec.backup.storages[storage] so
+                      the node controller can render the VALKEY_BACKUP_* storage env on the seed init
+                      container without access to the cluster's backup block.
+                    properties:
+                      azure:
+                        description: azure holds the Azure configuration when type
+                          is azure.
+                        properties:
+                          container:
+                            description: container is the Azure Blob container name.
+                            type: string
+                          credentialsSecret:
+                            description: credentialsSecret holds the storage-account
+                              credentials.
+                            type: string
+                          prefix:
+                            description: prefix is the blob prefix within the container.
+                            type: string
+                        required:
+                        - container
+                        type: object
+                      gcs:
+                        description: gcs holds the GCS configuration when type is
+                          gcs.
+                        properties:
+                          bucket:
+                            description: bucket is the GCS bucket name.
+                            type: string
+                          credentialsSecret:
+                            description: credentialsSecret holds the service-account
+                              credentials.
+                            type: string
+                          prefix:
+                            description: prefix is the object prefix within the bucket.
+                            type: string
+                        required:
+                        - bucket
+                        type: object
+                      s3:
+                        description: s3 holds the S3 configuration when type is s3.
+                        properties:
+                          bucket:
+                            description: bucket is the S3 bucket name.
+                            type: string
+                          credentialsSecret:
+                            description: credentialsSecret holds the access credentials.
+                            type: string
+                          endpointUrl:
+                            description: endpointUrl overrides the S3 endpoint (for
+                              S3-compatible stores).
+                            type: string
+                          prefix:
+                            description: prefix is the key prefix within the bucket.
+                            type: string
+                          region:
+                            description: region is the S3 region.
+                            type: string
+                        required:
+                        - bucket
+                        type: object
+                      type:
+                        description: type is the backend type. filesystem/pvc is test-only.
+                        enum:
+                        - s3
+                        - gcs
+                        - azure
+                        - filesystem
+                        type: string
+                    required:
+                    - type
+                    type: object
                 required:
                 - backupName
                 - shardIndex

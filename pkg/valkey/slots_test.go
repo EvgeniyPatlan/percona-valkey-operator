@@ -127,6 +127,47 @@ func TestSubtractSlotRange(t *testing.T) {
 	}
 }
 
+func TestSubtractRanges(t *testing.T) {
+	tests := []struct {
+		name         string
+		base, remove []SlotRange
+		want         []SlotRange
+	}{
+		{
+			name:   "remove scattered key-slots from a shard range (restore gap)",
+			base:   []SlotRange{{0, 5461}},
+			remove: []SlotRange{{78, 78}, {202, 202}, {5332, 5332}},
+			want:   []SlotRange{{0, 77}, {79, 201}, {203, 5331}, {5333, 5461}},
+		},
+		{
+			name:   "remove nothing -> base unchanged",
+			base:   []SlotRange{{0, 100}},
+			remove: nil,
+			want:   []SlotRange{{0, 100}},
+		},
+		{
+			name:   "remove everything -> empty",
+			base:   []SlotRange{{0, 100}},
+			remove: []SlotRange{{0, 100}},
+			want:   nil,
+		},
+		{
+			name:   "unsorted/overlapping inputs are normalized",
+			base:   []SlotRange{{50, 100}, {0, 49}},
+			remove: []SlotRange{{90, 100}, {0, 9}},
+			want:   []SlotRange{{10, 89}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SubtractRanges(tt.base, tt.remove)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("SubtractRanges(%v, %v) = %v, want %v", tt.base, tt.remove, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeSlotRanges(t *testing.T) {
 	tests := []struct {
 		name string

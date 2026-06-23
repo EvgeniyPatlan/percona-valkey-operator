@@ -28,6 +28,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
@@ -63,7 +64,19 @@ var s3TestHTTPClient *http.Client
 // (06 §4.8); downloads stream straight off GetObject's response body.
 type s3Store struct {
 	client *s3.Client
-	bucket string
+	// uploader streams Put bodies via the s3manager multipart uploader. The SYNC RDB
+	// body is UNSEEKABLE; a single PutObject with SigV4 must hash the whole payload,
+	// which over a plain-HTTP endpoint (MinIO/Ceph without TLS) requires a seekable
+	// body it cannot rewind ("failed to seek body to start, request stream is not
+	// seekable"). The uploader reads the stream into bounded part buffers and signs
+	// each part independently, so an unseekable stream uploads correctly over HTTP or
+	// HTTPS without buffering the whole RDB in memory (06 §4.8).
+	//nolint:staticcheck // SA1019: manager.Uploader is deprecated in favour of the
+	// feature/s3/transfermanager package, which is still EXPERIMENTAL (aws-sdk-go-v2
+	// #3306). manager.Uploader is stable and provides the streaming/unseekable-body
+	// multipart upload the backup needs; migrate when transfermanager stabilises.
+	uploader *manager.Uploader
+	bucket   string
 	// prefix is the configured in-bucket key prefix; every store-relative key is
 	// rooted under it so a backend owns a sub-tree of the bucket.
 	prefix string
@@ -119,8 +132,11 @@ func newS3Store(ctx context.Context, cfg StorageConfig) (ArtifactStore, error) {
 
 	return &s3Store{
 		client: client,
-		bucket: cfg.S3.Bucket,
-		prefix: cfg.S3.Prefix,
+		//nolint:staticcheck // SA1019: see the uploader field — manager.NewUploader is
+		// deprecated but stable; the replacement transfermanager is still experimental.
+		uploader: manager.NewUploader(client),
+		bucket:   cfg.S3.Bucket,
+		prefix:   cfg.S3.Prefix,
 	}, nil
 }
 
@@ -141,21 +157,26 @@ func (s *s3Store) fullKey(key string) string {
 	return joinKey(s.prefix, key)
 }
 
-// Put streams r to the object at key via PutObject. When size >= 0 it is set as
-// the ContentLength so the SDK streams the body without buffering it to compute a
-// length (memory independent of RDB size, 06 §4.8); a negative size falls back to
-// the SDK's own handling. A failed PutObject leaves no committed object (06 §9.3).
-func (s *s3Store) Put(ctx context.Context, key string, r io.Reader, size int64) error {
+// Put streams r to the object at key via the s3manager multipart uploader. The
+// uploader reads the (possibly UNSEEKABLE) body into bounded part buffers and signs
+// each part independently, so it uploads correctly over plain HTTP or HTTPS without
+// rewinding the body or buffering the whole RDB in memory (06 §4.8) — a single
+// PutObject would fail SigV4 payload hashing on an unseekable stream over HTTP
+// ("request stream is not seekable"). ContentLength is intentionally NOT set: the
+// uploader derives part sizes from what it reads, and a fixed ContentLength on a
+// multipart upload is rejected. A failed upload leaves no committed object (the
+// uploader aborts the multipart upload on error — 06 §9.3).
+func (s *s3Store) Put(ctx context.Context, key string, r io.Reader, _ int64) error {
 	in := &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s.fullKey(key)),
 		Body:   r,
 	}
-	if size >= 0 {
-		in.ContentLength = aws.Int64(size)
-	}
-	if _, err := s.client.PutObject(ctx, in); err != nil {
-		return fmt.Errorf("s3 backend: put %q: %w", key, err)
+	//nolint:staticcheck // SA1019: see the uploader field — manager.Uploader.Upload is
+	// deprecated but stable; the replacement transfermanager is still experimental.
+	_, uerr := s.uploader.Upload(ctx, in)
+	if uerr != nil {
+		return fmt.Errorf("s3 backend: put %q: %w", key, uerr)
 	}
 	return nil
 }

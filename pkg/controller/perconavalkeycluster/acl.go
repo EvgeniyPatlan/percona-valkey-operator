@@ -237,7 +237,18 @@ func (r *Reconciler) liveReloadAuth(
 			// the signature unstamped so the next pass retries when pods are ready.
 			return errAuthReloadPending
 		}
-		return fmt.Errorf("auth reload: no reachable node accepted the live ACL/auth reload")
+		// Nodes are reachable but NONE accepted the live reload — e.g. the running
+		// ACL predates a newly-added system-user grant (notably +acl|load), so the
+		// engine rejects ACL LOAD with NOPERM. This is NOT fatal: the rewritten
+		// aclfile is already mounted, so the change takes effect on the node's next
+		// restart. Stay pending (retry) instead of failing the cluster — a
+		// system-user GRANT change the running ACL forbids needs a pod roll to
+		// apply; live reload only covers password/user-data changes the current
+		// grants already permit.
+		log.Info("auth reload: no reachable node accepted the live reload; "+
+			"change applies on the next pod restart (running ACL likely predates a new system-user grant)",
+			"reachable", reachable)
+		return errAuthReloadPending
 	}
 	r.recorder.Eventf(cluster, nil, eventNormal, EventAuthReloaded, "AuthReload",
 		"Applied auth/ACL change live to %d/%d node(s) (ACL LOAD + CONFIG SET masterauth)", reloaded, reachable)

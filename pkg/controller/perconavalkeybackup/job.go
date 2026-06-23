@@ -373,17 +373,48 @@ func (r *Reconciler) handleJobComplete(ctx context.Context, bk *valkeyv1alpha1.P
 }
 
 // readManifest opens an ArtifactStore for the resolved storage and reads the
-// backup-set manifest. In the operator process the StorageConfig carries no
-// credential values (presence-checked only, 06 §8.2); tests inject a FakeStore
-// via storeFactory so this is exercised hermetically.
+// backup-set manifest to hydrate status. Unlike the Job (which mounts the
+// credentials Secret as env), the OPERATOR process must load the credential values
+// itself to authenticate to the object store — without them a cloud backend falls
+// back to the SDK default chain (e.g. EC2 IMDS) and the GetObject fails with a
+// credentials error. The values stay in-process for the single store call and are
+// never written to a CR or the Job spec (06 §8.2). Tests inject a FakeStore via
+// storeFactory so this is exercised hermetically (creds are then irrelevant).
 func (r *Reconciler) readManifest(
 	ctx context.Context, bk *valkeyv1alpha1.PerconaValkeyBackup, rs *resolvedStorage,
 ) (backup.Manifest, error) {
-	store, err := r.storeFactory(ctx, backup.StorageConfigFromSpec(rs.spec, nil))
+	creds, err := r.loadStorageCreds(ctx, bk.Namespace, rs)
+	if err != nil {
+		return backup.Manifest{}, err
+	}
+	store, err := r.storeFactory(ctx, backup.StorageConfigFromSpec(rs.spec, creds))
 	if err != nil {
 		return backup.Manifest{}, fmt.Errorf("open store: %w", err)
 	}
 	return backup.ReadManifest(ctx, store, backup.ManifestKey(bk.Spec.ClusterName, bk.Name))
+}
+
+// loadStorageCreds reads the resolved storage's credentials Secret into a
+// name->value map the ArtifactStore backend authenticates with (the cloud-SDK env
+// names, e.g. AWS_ACCESS_KEY_ID). Returns nil (defer to the SDK default chain) when
+// the storage needs no Secret (the test-only filesystem backend) or none is named.
+// The values are held only for the immediate store call (06 §8.2).
+func (r *Reconciler) loadStorageCreds(
+	ctx context.Context, namespace string, rs *resolvedStorage,
+) (map[string]string, error) {
+	if rs.credsSecret == "" {
+		return nil, nil
+	}
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Name: rs.credsSecret, Namespace: namespace}
+	if err := r.Get(ctx, key, secret); err != nil {
+		return nil, fmt.Errorf("get credentialsSecret %q: %w", rs.credsSecret, err)
+	}
+	creds := make(map[string]string, len(secret.Data))
+	for k, v := range secret.Data {
+		creds[k] = string(v)
+	}
+	return creds, nil
 }
 
 // hydrateFromManifest copies the manifest's coverage/version fields and per-shard

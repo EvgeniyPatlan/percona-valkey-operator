@@ -45,6 +45,12 @@ func TestBackupRulesCarrySyncGrants(t *testing.T) {
 			t.Fatalf("operator STILL carries snapshot/replication grant %q (trust-boundary regression, 07 §10):\n%s", tok, operator)
 		}
 	}
+	// _operator MUST carry +acl|load so the live auth reload (ACL LOAD on the running
+	// engine) succeeds; without it any in-place ACL/auth change fails to apply and
+	// the reconcile errors (NOPERM acl|load) until a pod restart.
+	if !strings.Contains(operator, " +acl|load") {
+		t.Fatalf("operator rules missing +acl|load (live auth reload cannot apply ACL changes):\n%s", operator)
+	}
 
 	// _backup is the snapshot+replication user: canonical prefix preserved
 	// contiguous, with the SYNC-as-replica grants APPENDED.
@@ -55,6 +61,12 @@ func TestBackupRulesCarrySyncGrants(t *testing.T) {
 		if !strings.Contains(backup, " "+tok) {
 			t.Fatalf("backup rules missing replication grant %q (SYNC-as-replica backup would stay blocked):\n%s", tok, backup)
 		}
+	}
+	// _backup MUST be able to scrape CLUSTER NODES to resolve shard primaries before
+	// snapshotting (06 §4.3 step 1); without +cluster|nodes the backup Job fails at
+	// topology resolution (NOPERM cluster|nodes) before any RDB is pulled.
+	if !strings.Contains(backup, " +cluster|nodes") {
+		t.Fatalf("backup rules missing +cluster|nodes (backup Job cannot resolve shard primaries):\n%s", backup)
 	}
 	if backup != wantBackupRules {
 		t.Fatalf("backup rules drifted:\n got: %q\nwant: %q", backup, wantBackupRules)

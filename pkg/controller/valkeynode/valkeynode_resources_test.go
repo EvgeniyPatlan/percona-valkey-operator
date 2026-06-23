@@ -585,9 +585,21 @@ func TestRestoreSeedInitContainerInjected(t *testing.T) {
 	node := unitNode("mycluster-2-0")
 	node.Spec.Persistence = &valkeyv1alpha1.PersistenceSpec{}
 	node.Spec.RestoreFrom = &valkeyv1alpha1.RestoreSource{
-		Storage:    "s3-primary",
-		BackupName: "nightly-full",
-		ShardIndex: 2,
+		Storage:     "s3-primary",
+		BackupName:  "nightly-full",
+		ShardIndex:  2,
+		ClusterName: "sourcecluster",
+		StorageSpec: &valkeyv1alpha1.BackupStorageSpec{
+			Type: valkeyv1alpha1.BackupStorageS3,
+			S3: &valkeyv1alpha1.BackupStorageS3Spec{
+				Bucket:            "my-backups",
+				Prefix:            "pvk",
+				Region:            "us-east-1",
+				EndpointURL:       "http://minio.minio.svc:9000",
+				CredentialsSecret: "minio-creds",
+			},
+		},
+		CredentialsSecret: "minio-creds",
 	}
 	labels := naming.NodeLabels(node.Name, node.Labels)
 	sts, err := buildStatefulSet(node, labels)
@@ -613,6 +625,37 @@ func TestRestoreSeedInitContainerInjected(t *testing.T) {
 	}
 	if !mountsData {
 		t.Errorf("restore-seed must mount the data volume at %s, got %+v", dataMountPath, seed.VolumeMounts)
+	}
+
+	// CR-8 regression guard: the seed container MUST carry the VALKEY_BACKUP_* env
+	// (so cmd/valkey-backup --download can locate the shard RDB) and the creds Secret
+	// via EnvFrom (so it authenticates to the backend). A bare container with only the
+	// --download/--shard flags downloads nothing — the bug that blocked live restore.
+	envByName := map[string]string{}
+	for _, e := range seed.Env {
+		envByName[e.Name] = e.Value
+	}
+	wantEnv := map[string]string{
+		"VALKEY_BACKUP_CLUSTER":      "sourcecluster",
+		"VALKEY_BACKUP_NAME":         "nightly-full",
+		"VALKEY_BACKUP_STORAGE_TYPE": "s3",
+		"VALKEY_BACKUP_S3_BUCKET":    "my-backups",
+		"VALKEY_BACKUP_S3_PREFIX":    "pvk",
+		"VALKEY_BACKUP_S3_ENDPOINT":  "http://minio.minio.svc:9000",
+	}
+	for k, want := range wantEnv {
+		if got := envByName[k]; got != want {
+			t.Errorf("restore-seed env %s = %q, want %q (seed env: %+v)", k, got, want, seed.Env)
+		}
+	}
+	var hasCreds bool
+	for _, ef := range seed.EnvFrom {
+		if ef.SecretRef != nil && ef.SecretRef.Name == "minio-creds" {
+			hasCreds = true
+		}
+	}
+	if !hasCreds {
+		t.Errorf("restore-seed must mount the credentials Secret via EnvFrom, got %+v", seed.EnvFrom)
 	}
 
 	server := containerByName(sts.Spec.Template.Spec.Containers, serverContainerName)

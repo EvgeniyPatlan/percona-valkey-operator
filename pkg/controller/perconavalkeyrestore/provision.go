@@ -189,6 +189,16 @@ func restoreMarkerAnnotations(rst *valkeyv1alpha1.PerconaValkeyRestore, src reso
 	if src.StorageName != "" {
 		markers[annRestoreStorage] = src.StorageName
 	}
+	// The source cluster + backup names (from the manifest) derive the object keys
+	// the seed init container downloads; the restored-from provenance marker does not
+	// preserve them (it is "backupSource" for an inline source), so stamp them
+	// explicitly for the cluster controller's restore-target seam (06 §7.4).
+	if src.Cluster != "" {
+		markers[annSourceCluster] = src.Cluster
+	}
+	if src.Backup != "" {
+		markers[annSourceBackup] = src.Backup
+	}
 	return markers
 }
 

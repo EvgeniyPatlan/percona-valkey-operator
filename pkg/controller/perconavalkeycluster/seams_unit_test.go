@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
+	"valkey.percona.com/percona-valkey-operator/pkg/valkey"
 )
 
 // seamCluster builds a minimal cluster-mode cluster for seam unit tests.
@@ -84,6 +85,17 @@ func TestRestoreSourceForNodeOnlyPrimary(t *testing.T) {
 	cl.Annotations = map[string]string{
 		annRestoreMarker:  "myrestore/nightly-full",
 		annRestoreStorage: "s3-primary",
+		annSourceCluster:  "sourcecluster",
+		annSourceBackup:   "nightly-full",
+	}
+	cl.Spec.Backup.Storages = map[string]valkeyv1alpha1.BackupStorageSpec{
+		"s3-primary": {
+			Type: valkeyv1alpha1.BackupStorageS3,
+			S3: &valkeyv1alpha1.BackupStorageS3Spec{
+				Bucket:            "my-backups",
+				CredentialsSecret: "minio-creds",
+			},
+		},
 	}
 
 	if got := restoreSourceForNode(cl, nodeKey{shard: 0, node: 1}); got != nil {
@@ -103,10 +115,47 @@ func TestRestoreSourceForNodeOnlyPrimary(t *testing.T) {
 	if prim.Storage != "s3-primary" {
 		t.Errorf("storage = %q, want s3-primary (from restore-storage marker)", prim.Storage)
 	}
+	// CR-8: the seam must resolve the SOURCE cluster name + the full storage spec +
+	// the creds Secret so the node controller can render the seed env (without these
+	// the seed download has no object keys, no backend coords, and no credentials).
+	if prim.ClusterName != "sourcecluster" {
+		t.Errorf("clusterName = %q, want sourcecluster (from source-cluster marker)", prim.ClusterName)
+	}
+	if prim.StorageSpec == nil || prim.StorageSpec.S3 == nil || prim.StorageSpec.S3.Bucket != "my-backups" {
+		t.Errorf("storageSpec must be resolved from spec.backup.storages, got %+v", prim.StorageSpec)
+	}
+	if prim.CredentialsSecret != "minio-creds" {
+		t.Errorf("credentialsSecret = %q, want minio-creds (from resolved storage)", prim.CredentialsSecret)
+	}
 	// Non-restore cluster: nil regardless of node index.
 	fresh := seamCluster()
 	if got := restoreSourceForNode(fresh, nodeKey{shard: 0, node: 0}); got != nil {
 		t.Errorf("non-restore cluster must not seed, got %+v", got)
+	}
+}
+
+// TestEvenSplitRanges locks the restore re-form's canonical even-split ranges to
+// the same remainder-to-lowest layout SplitUnassignedEvenly (and thus the bootstrap
+// + backups) use, so a restored cluster reproduces the source slot map exactly.
+func TestEvenSplitRanges(t *testing.T) {
+	got := evenSplitRanges(3)
+	want := []valkey.SlotRange{{Start: 0, End: 5461}, {Start: 5462, End: 10922}, {Start: 10923, End: 16383}}
+	if len(got) != len(want) {
+		t.Fatalf("evenSplitRanges(3) len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	total := 0
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("shard %d range = %v, want %v", i, got[i], want[i])
+		}
+		total += got[i].Count()
+	}
+	if total != valkey.TotalSlots {
+		t.Errorf("ranges cover %d slots, want %d", total, valkey.TotalSlots)
+	}
+	// A single shard owns the whole keyspace.
+	if one := evenSplitRanges(1); len(one) != 1 || one[0] != (valkey.SlotRange{Start: 0, End: 16383}) {
+		t.Errorf("evenSplitRanges(1) = %v, want [0-16383]", one)
 	}
 }
 

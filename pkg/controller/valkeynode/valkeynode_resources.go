@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
+	"valkey.percona.com/percona-valkey-operator/pkg/backup"
 	"valkey.percona.com/percona-valkey-operator/pkg/naming"
 	"valkey.percona.com/percona-valkey-operator/pkg/valkey"
 )
@@ -695,7 +696,7 @@ func buildRestoreSeedContainer(node *valkeyv1alpha1.ValkeyNode) corev1.Container
 	if node.Spec.Persistence != nil {
 		mounts = append(mounts, corev1.VolumeMount{Name: naming.NodePVCName(node.Name), MountPath: dataMountPath})
 	}
-	return corev1.Container{
+	c := corev1.Container{
 		Name:  restoreSeedContainerName,
 		Image: serverImage(node),
 		Command: []string{
@@ -703,9 +704,47 @@ func buildRestoreSeedContainer(node *valkeyv1alpha1.ValkeyNode) corev1.Container
 			"--download",
 			"--shard=" + strconv.Itoa(int(node.Spec.RestoreFrom.ShardIndex)),
 		},
+		Env:             restoreSeedEnv(node.Spec.RestoreFrom),
 		VolumeMounts:    mounts,
 		SecurityContext: node.Spec.ContainerSecurityContext,
 	}
+	// The object-store credentials (cloud-SDK env names) are mounted into the POD via
+	// the resolved credentials Secret; the operator never reads them (06 §8.2). The
+	// download then authenticates to the backend from the pod env.
+	if secret := node.Spec.RestoreFrom.CredentialsSecret; secret != "" {
+		c.EnvFrom = []corev1.EnvFromSource{{
+			SecretRef: &corev1.SecretEnvSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secret},
+			},
+		}}
+	}
+	return c
+}
+
+// restoreSeedEnv renders the VALKEY_BACKUP_* environment the cmd/valkey-backup
+// download mode reads to locate and fetch this shard's RDB: the source cluster +
+// backup names that derive the object keys and the backend type + coordinates from
+// the resolved storage spec. It reuses backup.JobEnv so the env-name contract stays
+// single-sourced with the backup-Job builder (pkg/backup/jobenv.go); the download
+// path needs no seed-node/auth/TLS env (it never connects to the engine). Storage
+// credential VALUES travel separately via the EnvFrom creds Secret (06 §8.2).
+func restoreSeedEnv(src *valkeyv1alpha1.RestoreSource) []corev1.EnvVar {
+	if src == nil {
+		return nil
+	}
+	p := backup.JobEnvParams{
+		Cluster: src.ClusterName,
+		Backup:  src.BackupName,
+	}
+	if src.StorageSpec != nil {
+		p.Spec = *src.StorageSpec
+	}
+	kvs := backup.JobEnv(p)
+	out := make([]corev1.EnvVar, 0, len(kvs))
+	for _, kv := range kvs {
+		out = append(out, corev1.EnvVar{Name: kv.Name, Value: kv.Value})
+	}
+	return out
 }
 
 // buildStatefulSet builds the 1-replica durable StatefulSet with a

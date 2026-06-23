@@ -95,6 +95,18 @@ const (
 	annRestoreStorage = "valkey.percona.com/restore-storage"
 	annClusterTmpl    = "valkey.percona.com/restore-cluster-template"
 	annSeedAppendonly = "valkey.percona.com/restore-seed-appendonly"
+	// annSourceCluster carries the SOURCE cluster name (the manifest's clusterName)
+	// the backup-set object keys are prefixed with. The restored-from marker records
+	// only <restoreName>/<backupRef> for provenance and is "backupSource" for an
+	// inline source, so the source cluster + backup names that derive the object keys
+	// are stamped separately for the cluster controller to read into the per-node
+	// RestoreSource (06 §7.4). Without them the seed init container cannot build the
+	// VALKEY_BACKUP_CLUSTER/VALKEY_BACKUP_NAME that key the shard RDBs.
+	annSourceCluster = "valkey.percona.com/restore-source-cluster"
+	// annSourceBackup carries the SOURCE backup-set name (the manifest's backupName)
+	// the shard RDBs live under; paired with annSourceCluster it derives the object
+	// keys for the seed download.
+	annSourceBackup = "valkey.percona.com/restore-source-backup"
 )
 
 // truthy reports whether an annotation value is an affirmative ("true"/"1"). It is

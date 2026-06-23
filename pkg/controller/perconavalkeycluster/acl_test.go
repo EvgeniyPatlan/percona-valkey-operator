@@ -262,8 +262,9 @@ func TestReconcileUsersACLCreatesSecretAndRenders(t *testing.T) {
 		t.Fatalf("missing system users:\n%s", acl)
 	}
 	// _backup carries the SYNC-as-replica + snapshot grants (the backup Job AUTHs
-	// as _backup and does the BGSAVE+SYNC itself).
-	if !strings.Contains(acl, "+bgsave +lastsave +save +info +wait +ping +sync +psync +replconf") {
+	// as _backup and does the BGSAVE+SYNC itself), plus +cluster|nodes so it can
+	// scrape CLUSTER NODES to resolve shard primaries before snapshotting.
+	if !strings.Contains(acl, "+bgsave +lastsave +save +info +wait +ping +cluster|nodes +sync +psync +replconf") {
 		t.Fatalf("_backup missing M6 replication grants (SYNC-as-replica backup blocked):\n%s", acl)
 	}
 	// _operator must NOT carry any replication/snapshot grant (trust-boundary

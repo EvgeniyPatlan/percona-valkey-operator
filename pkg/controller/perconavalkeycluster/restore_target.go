@@ -51,6 +51,23 @@ const annRestoreMarker = "valkey.percona.com/restored-from"
 // cluster's own resolved backup storage.
 const annRestoreStorage = "valkey.percona.com/restore-storage"
 
+// annSourceCluster / annSourceBackup carry the SOURCE cluster and backup-set names
+// (the manifest's clusterName/backupName) the shard RDB object keys are derived from.
+// The restored-from provenance marker does not preserve them (it is "backupSource"
+// for an inline source), so the seam reads these to render the per-node
+// RestoreSource.ClusterName / .BackupName the seed init container needs to build the
+// VALKEY_BACKUP_CLUSTER/VALKEY_BACKUP_NAME object-key env.
+//
+// MUST stay byte-identical to the writer in perconavalkeyrestore/status.go
+// (annSourceCluster / annSourceBackup): the two packages have no import relationship,
+// so a drift here silently yields an empty ClusterName on the seed (download cannot
+// resolve the object key). Mirrors the established annRestoreMarker/annRestoreStorage
+// cross-package marker convention.
+const (
+	annSourceCluster = "valkey.percona.com/restore-source-cluster"
+	annSourceBackup  = "valkey.percona.com/restore-source-backup"
+)
+
 // isRestoreTarget reports whether this cluster carries the restored-from marker
 // (so the node controller must seed each shard's RDB before the engine boots).
 func isRestoreTarget(cluster *valkeyv1alpha1.PerconaValkeyCluster) bool {
@@ -80,11 +97,53 @@ func restoreSourceForNode(cluster *valkeyv1alpha1.PerconaValkeyCluster, key node
 		// Replicas re-sync from the seeded primary; only the primary seeds the RDB.
 		return nil
 	}
-	return &valkeyv1alpha1.RestoreSource{
-		Storage:    storageForRestore(cluster),
-		BackupName: backupNameFromMarker(cluster.Annotations[annRestoreMarker]),
-		ShardIndex: int32(key.shard),
+	storageName := storageForRestore(cluster)
+	// Prefer the explicit source-backup marker (set for both backupName and inline
+	// backupSource restores); fall back to parsing the provenance marker for older
+	// targets stamped before the source markers existed.
+	backupName := cluster.Annotations[annSourceBackup]
+	if backupName == "" {
+		backupName = backupNameFromMarker(cluster.Annotations[annRestoreMarker])
 	}
+	rs := &valkeyv1alpha1.RestoreSource{
+		Storage:     storageName,
+		BackupName:  backupName,
+		ShardIndex:  int32(key.shard),
+		ClusterName: cluster.Annotations[annSourceCluster],
+	}
+	// Resolve the named storage's full coordinates + credentials Secret from the
+	// cluster's own backup block so the node controller can render the VALKEY_BACKUP_*
+	// storage env + EnvFrom creds on the seed init container (it has no access to the
+	// cluster's backup storages otherwise — CR-8 / 06 §7.4, §8.2).
+	if storageName != "" {
+		if spec, ok := cluster.Spec.Backup.Storages[storageName]; ok {
+			specCopy := spec
+			rs.StorageSpec = &specCopy
+			rs.CredentialsSecret = credentialsSecretForStorage(spec)
+		}
+	}
+	return rs
+}
+
+// credentialsSecretForStorage returns the object-store credentials Secret named by a
+// resolved storage sub-spec (the cloud-SDK-env Secret the seed init container mounts
+// via EnvFrom). The test-only filesystem backend needs none.
+func credentialsSecretForStorage(spec valkeyv1alpha1.BackupStorageSpec) string {
+	switch spec.Type {
+	case valkeyv1alpha1.BackupStorageS3:
+		if spec.S3 != nil {
+			return spec.S3.CredentialsSecret
+		}
+	case valkeyv1alpha1.BackupStorageGCS:
+		if spec.GCS != nil {
+			return spec.GCS.CredentialsSecret
+		}
+	case valkeyv1alpha1.BackupStorageAzure:
+		if spec.Azure != nil {
+			return spec.Azure.CredentialsSecret
+		}
+	}
+	return ""
 }
 
 // storageForRestore resolves the named backup-storage backend the restore-seed init

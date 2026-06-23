@@ -372,6 +372,18 @@ func (r *Reconciler) bootstrapJoin(
 	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster,
 	state *valkey.ClusterState, nodes *valkeyv1alpha1.ValkeyNodeList,
 ) (bool, ctrl.Result, error) {
+	// Phase 9 (restore targets only): re-form a restore-seeded cluster. A seeded
+	// primary owns only the scattered slots its dump.rdb keys fell in and boots with
+	// a single-node gossip view, so the generic MEET/ADDSLOTS phases below skip it
+	// (it is neither isolated-pending nor zero-slot). reformRestoreTarget MEETs all
+	// seeded nodes and fills each shard's even-split range gaps; once all 16384 slots
+	// are assigned it is a no-op and the normal phases (REPLICATE) finish the cluster
+	// (CR-8 / 06 §7.5). No-op for non-restore clusters.
+	if progressed, rerr := r.reformRestoreTarget(ctx, cluster, state, nodes); rerr != nil {
+		return true, ctrl.Result{}, r.fail(ctx, cluster, ReasonClusterMeet, rerr)
+	} else if progressed {
+		return r.progressRequeue(ctx, cluster, "re-forming restore-seeded cluster")
+	}
 	// Phase 10: MEET isolated pending nodes (bidirectional, epoch-bumped).
 	met, err := r.meetIsolatedNodes(ctx, cluster, state)
 	if err != nil {

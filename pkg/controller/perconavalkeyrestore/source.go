@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
@@ -156,8 +157,14 @@ func storageConfigFromSource(src *valkeyv1alpha1.BackupSource, dest backup.Desti
 // manifest object — the FIRST artifact a restore touches (06 §7.5). A missing
 // manifest surfaces as a wrapped backup.ErrNotExist so the caller fails the restore
 // cleanly (the set is incomplete / never existed).
-func (r *Reconciler) readManifest(ctx context.Context, src resolvedSource) (backup.Manifest, error) {
-	store, err := r.storeFactory(ctx, src.Config)
+func (r *Reconciler) readManifest(ctx context.Context, src resolvedSource, namespace string) (backup.Manifest, error) {
+	cfg := src.Config
+	creds, err := r.loadStorageCreds(ctx, namespace, cfg)
+	if err != nil {
+		return backup.Manifest{}, err
+	}
+	cfg.Credentials = creds
+	store, err := r.storeFactory(ctx, cfg)
 	if err != nil {
 		return backup.Manifest{}, fmt.Errorf("build artifact store: %w", err)
 	}
@@ -170,4 +177,50 @@ func (r *Reconciler) readManifest(ctx context.Context, src resolvedSource) (back
 		return backup.Manifest{}, fmt.Errorf("read backup manifest %q: %w", key, err)
 	}
 	return man, nil
+}
+
+// loadStorageCreds reads the storage credentials Secret named in the resolved
+// StorageConfig into a name->value map the ArtifactStore backend authenticates
+// with. Unlike the seed init container (which mounts the Secret as pod env), the
+// OPERATOR reads the manifest in-process and must load the credential values itself
+// — without them a cloud backend falls back to the SDK default chain (e.g. EC2 IMDS)
+// and the manifest GetObject fails. Returns nil (defer to the SDK default chain)
+// when no Secret is named (e.g. the test-only filesystem backend, or IRSA/role
+// credentials). The values are held only for the immediate store call (06 §8.2).
+func (r *Reconciler) loadStorageCreds(
+	ctx context.Context, namespace string, cfg backup.StorageConfig,
+) (map[string]string, error) {
+	name := credentialsSecretName(cfg)
+	if name == "" {
+		return nil, nil
+	}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, secret); err != nil {
+		return nil, fmt.Errorf("get credentialsSecret %q: %w", name, err)
+	}
+	creds := make(map[string]string, len(secret.Data))
+	for k, v := range secret.Data {
+		creds[k] = string(v)
+	}
+	return creds, nil
+}
+
+// credentialsSecretName returns the credentials Secret named by the resolved
+// storage sub-spec, or "" when none applies (filesystem / unset).
+func credentialsSecretName(cfg backup.StorageConfig) string {
+	switch cfg.Type {
+	case valkeyv1alpha1.BackupStorageS3:
+		if cfg.S3 != nil {
+			return cfg.S3.CredentialsSecret
+		}
+	case valkeyv1alpha1.BackupStorageGCS:
+		if cfg.GCS != nil {
+			return cfg.GCS.CredentialsSecret
+		}
+	case valkeyv1alpha1.BackupStorageAzure:
+		if cfg.Azure != nil {
+			return cfg.Azure.CredentialsSecret
+		}
+	}
+	return ""
 }

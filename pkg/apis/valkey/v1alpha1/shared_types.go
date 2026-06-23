@@ -641,6 +641,25 @@ type RestoreSource struct {
 	// the backup set).
 	// +kubebuilder:validation:Minimum=0
 	ShardIndex int32 `json:"shardIndex"`
+	// clusterName is the SOURCE cluster name the backup-set was taken from; together
+	// with backupName it derives the object keys (<clusterName>/<backupName>/...).
+	// The cluster controller resolves it from the restore markers (06 §7.4) so the
+	// node controller can render the VALKEY_BACKUP_CLUSTER env without re-reading the
+	// restore intent.
+	// +optional
+	ClusterName string `json:"clusterName,omitempty"`
+	// storageSpec is the resolved backend type + coordinates (bucket/prefix/region/
+	// endpoint) the cluster controller copies from spec.backup.storages[storage] so
+	// the node controller can render the VALKEY_BACKUP_* storage env on the seed init
+	// container without access to the cluster's backup block.
+	// +optional
+	StorageSpec *BackupStorageSpec `json:"storageSpec,omitempty"`
+	// credentialsSecret is the object-store credentials Secret (cloud-SDK env names)
+	// the cluster controller resolves from the named storage; the seed init container
+	// mounts it via EnvFrom so the download authenticates to the backend. The operator
+	// never reads it (06 §8.2).
+	// +optional
+	CredentialsSecret string `json:"credentialsSecret,omitempty"`
 }
 
 // BackupSource is an inline restore source (for restoring from an artifact whose

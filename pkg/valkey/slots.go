@@ -160,6 +160,24 @@ func subtractSlotRange(base, remove SlotRange) []SlotRange {
 	return result
 }
 
+// SubtractRanges removes every slot in remove from base, returning the minimal set
+// of disjoint ranges that remain (base minus remove). Both inputs are normalized
+// first so overlapping/unsorted inputs are handled, and neither is mutated. It is
+// the set-difference primitive the restore re-form uses to compute the unowned
+// "gap" slots in a shard's range (its full even-split range minus what the seed boot
+// already claimed), so only those are ADDSLOTS'd (06 §7.5).
+func SubtractRanges(base, remove []SlotRange) []SlotRange {
+	current := NormalizeSlotRanges(base)
+	for _, rm := range NormalizeSlotRanges(remove) {
+		next := make([]SlotRange, 0, len(current))
+		for _, b := range current {
+			next = append(next, subtractSlotRange(b, rm)...)
+		}
+		current = next
+	}
+	return NormalizeSlotRanges(current)
+}
+
 // NormalizeSlotRanges sorts ranges by Start and merges adjacent/overlapping
 // ones into the minimal set of disjoint ranges. The input is not mutated.
 func NormalizeSlotRanges(ranges []SlotRange) []SlotRange {

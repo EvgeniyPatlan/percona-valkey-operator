@@ -71,8 +71,17 @@ type SystemUser struct {
 // compromised _operator credential can no longer pull every shard's full dataset
 // over the replication protocol. Any change to this string is a CRITICAL
 // trust-boundary change (07 §10) requiring security-reviewer.
+//
+// +acl|load lets the operator apply a live ACL change in place: after rewriting
+// the mounted aclfile it issues ACL LOAD so running engines pick up user/grant/
+// password changes without a pod restart (the in-place auth reload, acl.go
+// liveReloadAuth). It is the aclfile-RELOAD subcommand ONLY — it re-reads the
+// operator-controlled aclfile and grants NO ability to mutate ACLs ad hoc
+// (acl|setuser/deluser stay denied), so the orchestration-only trust boundary is
+// preserved (an _operator credential still cannot read the keyspace or rewrite
+// grants, only reload the file the operator already controls).
 const operatorRules = "resetchannels resetkeys -@all +cluster +config|get +config|set +info " +
-	"+client|setname +client|setinfo +replicaof +wait +ping"
+	"+client|setname +client|setinfo +replicaof +wait +ping +acl|load"
 
 // backupRules is the canonical least-privilege _backup grant string. _backup is
 // the snapshot+replication user: it triggers a server-side RDB snapshot and
@@ -80,6 +89,12 @@ const operatorRules = "resetchannels resetkeys -@all +cluster +config|get +confi
 //
 //   - +bgsave +lastsave +save: server-side snapshot control (07 §4.3 canonical).
 //   - +info +wait +ping: connection/health + replica-ack await (07 §4.3 canonical).
+//   - +cluster|nodes: the backup Job scrapes CLUSTER NODES from a seed node to
+//     resolve each shard's LIVE primary (06 §4.3 step 1) before attaching as a
+//     replica — without it the Job cannot discover the topology to snapshot. This
+//     is the cluster-management subcommand only (read-only topology: node ids,
+//     addresses, slot ownership); it grants NO keyspace access, so the trust
+//     boundary below (full-keyspace read via replication) is unchanged.
 //   - +sync +psync +replconf (M6, APPENDED): the replication grants the backup Job
 //     needs to attach as a replica and stream each shard's RDB. The Job uses the
 //     legacy SYNC (+sync); +psync/+replconf are the canonical Valkey replica-user
@@ -90,7 +105,7 @@ const operatorRules = "resetchannels resetkeys -@all +cluster +config|get +confi
 // CRITICAL trust-boundary change (07 §10) requiring security-reviewer: _backup
 // is now the only system user that can read the full keyspace via replication.
 const backupRules = "resetchannels resetkeys -@all +bgsave +lastsave +save +info +wait +ping " +
-	"+sync +psync +replconf"
+	"+cluster|nodes +sync +psync +replconf"
 
 // SystemUsers returns the canonical system-user definitions in fixed order.
 // _exporter is included only when exporterEnabled (07 §4.3: skipped when the

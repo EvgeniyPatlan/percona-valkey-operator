@@ -94,10 +94,16 @@ func TestServerConfigRollHashExcludesLiveKeysAndIsDeterministic(t *testing.T) {
 // _backup now carries +sync +psync +replconf APPENDED after its canonical +ping.
 const (
 	wantOperatorBaseRules = "resetchannels resetkeys -@all +cluster +config|get +config|set +info +client|setname +client|setinfo +replicaof +wait +ping"
-	wantOperatorRules     = wantOperatorBaseRules
-	wantExporterRules     = "resetchannels resetkeys -@all +info +cluster|info +latency +ping"
-	wantBackupBaseRules   = "resetchannels resetkeys -@all +bgsave +lastsave +save +info +wait +ping"
-	wantBackupRules       = wantBackupBaseRules + " +sync +psync +replconf"
+	// +acl|load lets the operator reload the rewritten aclfile in place (live auth
+	// reload, acl.go liveReloadAuth); it is the aclfile-reload subcommand only and
+	// grants no ad-hoc ACL mutation, preserving the orchestration-only boundary.
+	wantOperatorRules   = wantOperatorBaseRules + " +acl|load"
+	wantExporterRules   = "resetchannels resetkeys -@all +info +cluster|info +latency +ping"
+	wantBackupBaseRules = "resetchannels resetkeys -@all +bgsave +lastsave +save +info +wait +ping"
+	// +cluster|nodes lets the backup Job scrape CLUSTER NODES to resolve shard
+	// primaries (06 §4.3 step 1); it is read-only topology and grants no keyspace
+	// access. APPENDED after the canonical prefix alongside the replication grants.
+	wantBackupRules = wantBackupBaseRules + " +cluster|nodes +sync +psync +replconf"
 )
 
 func TestSystemUsersVerbatim(t *testing.T) {
