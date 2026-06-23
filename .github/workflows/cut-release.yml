@@ -1,0 +1,159 @@
+# cut-release.yml — one-click full release to GHCR (under your own GitHub account).
+#
+# What it does when you click "Run workflow" and enter a version:
+#   1. builds + pushes the operator image  -> ghcr.io/<owner>/valkey-operator:<version>
+#   2. builds + pushes the backup/sidecar   -> ghcr.io/<owner>/valkey-backup:<version>
+#   3. renders install manifests PINNED to the operator image
+#   4. creates a GitHub Release v<version> (creates the tag too) with the manifests attached
+#
+# Auth uses the built-in GITHUB_TOKEN — no secrets to configure. This is the personal
+# GHCR release path; it is intentionally separate from release.yml (the Percona-org GA
+# path that pushes to Docker Hub).
+#
+# ONE-TIME: after the first run, make the GHCR packages public
+# (Profile -> Packages -> valkey-operator / valkey-backup -> Package settings -> Public),
+# otherwise users cannot pull the images.
+name: cut-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, semver, no leading v (e.g. 0.1.0)"
+        required: true
+        type: string
+      make_latest:
+        description: "Also tag images and the release as 'latest'"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # create the tag + GitHub Release
+  packages: write   # push images to GHCR
+
+jobs:
+  cut-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve variables
+        id: vars
+        run: |
+          set -euo pipefail
+          v="${{ inputs.version }}"
+          if [[ ! "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version '$v' is not semver (expected like 0.1.0)"; exit 1
+          fi
+          owner_lc="$(echo '${{ github.repository_owner }}' | tr 'A-Z' 'a-z')"
+          op="ghcr.io/$owner_lc/valkey-operator"
+          bk="ghcr.io/$owner_lc/valkey-backup"
+          optags="$op:$v"; bktags="$bk:$v"
+          if [[ "${{ inputs.make_latest }}" == "true" ]]; then
+            optags="$optags"$'\n'"$op:latest"
+            bktags="$bktags"$'\n'"$bk:latest"
+          fi
+          {
+            echo "version=$v"
+            echo "tag=v$v"
+            echo "owner_lc=$owner_lc"
+            echo "operator_image=$op:$v"
+            echo "backup_image=$bk:$v"
+            echo "operator_tags<<TAGS"; echo "$optags"; echo "TAGS"
+            echo "backup_tags<<TAGS"; echo "$bktags"; echo "TAGS"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push operator image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.vars.outputs.operator_tags }}
+          build-args: |
+            VERSION=${{ steps.vars.outputs.version }}
+            GIT_COMMIT=${{ github.sha }}
+
+      - name: Build + push backup/sidecar image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.sidecar
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.vars.outputs.backup_tags }}
+          build-args: |
+            VERSION=${{ steps.vars.outputs.version }}
+            GIT_COMMIT=${{ github.sha }}
+
+      - name: Render pinned install manifests
+        run: |
+          set -euo pipefail
+          make kustomize
+          ( cd config/manager && "$GITHUB_WORKSPACE/bin/kustomize" edit set image \
+              controller=${{ steps.vars.outputs.operator_image }} )
+          mkdir -p dist
+          ./bin/kustomize build config/default      > dist/bundle.yaml
+          ./bin/kustomize build config/cluster-wide > dist/cw-bundle.yaml
+          cp deploy/cr-minimal.yaml dist/cr-minimal.yaml
+
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          owner='${{ github.repository_owner }}'
+          tag='${{ steps.vars.outputs.tag }}'
+          cat > dist/notes.md <<EOF
+          ## Install
+
+          \`\`\`bash
+          # Operator + CRDs (namespaced install):
+          kubectl apply --server-side -f \\
+            https://github.com/$owner/percona-valkey-operator/releases/download/$tag/bundle.yaml
+
+          # A 3-shard test cluster:
+          kubectl apply -f \\
+            https://github.com/$owner/percona-valkey-operator/releases/download/$tag/cr-minimal.yaml
+          \`\`\`
+
+          Cluster-wide (all namespaces): use \`cw-bundle.yaml\`.
+          What to do next + how to verify: \`docs/scenarios-and-verification.md\`.
+
+          ## Images
+          - Operator: \`${{ steps.vars.outputs.operator_image }}\`
+          - Backup:   \`${{ steps.vars.outputs.backup_image }}\` (only for backup/restore; set \`spec.backup.image\`)
+          - Engine:   \`percona/valkey:9.1.0\` (Docker Hub)
+          EOF
+
+      - name: Create GitHub Release (creates the tag)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          latest_flag=--latest=false
+          [[ "${{ inputs.make_latest }}" == "true" ]] && latest_flag=--latest
+          gh release create "${{ steps.vars.outputs.tag }}" \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.vars.outputs.tag }}" \
+            --notes-file dist/notes.md \
+            $latest_flag \
+            dist/bundle.yaml dist/cw-bundle.yaml dist/cr-minimal.yaml
