@@ -1,7 +1,17 @@
 # Minimal cache cluster (03 §11.1): no persistence, no TLS, no backup.
+# Self-contained: creates the `valkey` namespace then a cache cluster in it, so
+# `kubectl apply -f cr-minimal.yaml` works against the cluster-wide operator
+# (cw-bundle.yaml), which watches all namespaces. For the namespaced operator
+# (bundle.yaml, watches only `valkey-operator`), create your cluster in the
+# `valkey-operator` namespace instead.
 # The has() guards keep this valid; marker defaults fill exporter={enabled:true},
-# podDisruptionBudget=Managed, replicas=1; CheckNSetDefaults fills shards stays 3,
+# podDisruptionBudget=Managed, replicas=1; CheckNSetDefaults keeps shards=3, fills
 # image and crVersion.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: valkey
+---
 apiVersion: valkey.percona.com/v1alpha1
 kind: PerconaValkeyCluster
 metadata:

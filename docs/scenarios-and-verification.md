@@ -91,11 +91,16 @@ kind create cluster --name valkey-test
 ```
 
 ### Install the operator
-From the repo, apply the bundled install manifest (operator + CRDs + RBAC):
+Apply the **cluster-wide** install manifest (operator + CRDs + RBAC). It watches
+**all** namespaces, so the `valkey`-namespace examples throughout this guide work:
 
 ```bash
-kubectl apply -f deploy/bundle.yaml
+kubectl apply --server-side -f deploy/cw-bundle.yaml
 ```
+
+> Prefer least privilege? `deploy/bundle.yaml` installs a **namespaced** operator that
+> watches only its own `valkey-operator` namespace — then create your clusters in
+> `valkey-operator` (not `valkey`).
 
 **✅ How you know it worked:** the operator pod is `Running`:
 

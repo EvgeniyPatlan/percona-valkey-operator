@@ -18,3 +18,6 @@ spec:
               fieldPath: metadata.namespace
         - name: WATCH_NAMESPACE
           value: ""
+          # Delete the base's fieldRef: an env var may not set both value and valueFrom.
+          # Cluster-wide watches ALL namespaces (empty string), not the operator's own.
+          valueFrom: null

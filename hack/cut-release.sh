@@ -132,16 +132,17 @@ cat > "$NOTES" <<EOF
 ## Install
 
 \`\`\`bash
-# Operator + CRDs (namespaced install):
+# Operator + CRDs (cluster-wide — watches all namespaces):
 kubectl apply --server-side -f \
-  https://github.com/$OWNER/percona-valkey-operator/releases/download/$TAG/bundle.yaml
+  https://github.com/$OWNER/percona-valkey-operator/releases/download/$TAG/cw-bundle.yaml
 
-# A 3-shard test cluster:
+# A 3-shard test cluster (creates the 'valkey' namespace + the cluster):
 kubectl apply -f \
   https://github.com/$OWNER/percona-valkey-operator/releases/download/$TAG/cr-minimal.yaml
 \`\`\`
 
-For a cluster-wide (all-namespaces) install use \`cw-bundle.yaml\`.
+Single-namespace alternative: \`bundle.yaml\` installs a namespaced operator that
+watches only \`valkey-operator\`; create your cluster in that namespace.
 Next steps + verification: see \`docs/scenarios-and-verification.md\`.
 
 ## Images

@@ -57,14 +57,17 @@ attached. Re-runnable; refuses if the tag/release already exists.
 ## What end users do after a release
 
 ```bash
-# install the operator + CRDs
+# install the operator + CRDs (cluster-wide — watches all namespaces)
 kubectl apply --server-side -f \
-  https://github.com/<you>/percona-valkey-operator/releases/download/v0.1.0/bundle.yaml
+  https://github.com/<you>/percona-valkey-operator/releases/download/v0.1.0/cw-bundle.yaml
 
-# create a 3-shard test cluster
+# create a 3-shard test cluster (creates the 'valkey' namespace + the cluster)
 kubectl apply -f \
   https://github.com/<you>/percona-valkey-operator/releases/download/v0.1.0/cr-minimal.yaml
 ```
+
+> Single-namespace alternative: `bundle.yaml` installs a namespaced operator that
+> watches only the `valkey-operator` namespace; put your cluster there.
 
 Then [scenarios-and-verification.md](scenarios-and-verification.md) walks through everything
 they can do and how to verify it.
