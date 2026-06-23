@@ -307,6 +307,20 @@ func (rc *realClient) ACLLoad(ctx context.Context) error {
 	return nil
 }
 
+// ACLList issues ACL LIST and returns the node's currently-loaded ACL rule
+// lines (one `user <name> ...` line per user). It is used only to verify that an
+// ACL LOAD actually applied the freshly rendered aclfile (see the interface doc
+// and acl.go liveReloadAuth): the reply is the same line syntax as the aclfile,
+// so the caller can compare loaded-vs-rendered to detect a Secret-mount
+// projection lag.
+func (rc *realClient) ACLList(ctx context.Context) ([]string, error) {
+	out, err := rc.c.Do(ctx, rc.c.B().AclList().Build()).AsStrSlice()
+	if err != nil {
+		return nil, fmt.Errorf("ACL LIST: %w", err)
+	}
+	return out, nil
+}
+
 // wrapUnsupportedErr appends an upgrade hint when err indicates the engine does
 // not recognise an atomic-migration subcommand (Valkey < 9.0, 05 §4).
 func wrapUnsupportedErr(err error) error {

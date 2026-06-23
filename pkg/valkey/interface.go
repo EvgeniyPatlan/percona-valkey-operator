@@ -160,6 +160,17 @@ type ClusterClient interface {
 	// ADR-008: ACL/auth changes are applied in place). It is a no-op-safe reload —
 	// re-loading an unchanged file simply re-applies the same rules.
 	ACLLoad(ctx context.Context) error
+	// ACLList returns the node's currently-LOADED ACL rules (ACL LIST), one line
+	// per user in the same `user <name> ...` syntax as the aclfile. The operator
+	// uses it ONLY to VERIFY that an ACL LOAD actually picked up the freshly
+	// rendered aclfile: Kubernetes Secret-mount projection lags the Secret write,
+	// so an ACL LOAD issued immediately can re-read STALE file content and report
+	// success while loading nothing new. Comparing ACL LIST against the rendered
+	// content closes that race (the operator stays pending + retries until the
+	// projection catches up rather than silently dropping the change). It is a
+	// read-only introspection of the operator's OWN rendered ACL (password HASHES
+	// only, never plaintext, never keyspace) — see operatorRules in acl.go.
+	ACLList(ctx context.Context) ([]string, error)
 }
 
 // ClientFactory is the seam the ValkeyNode controller holds so envtest injects a

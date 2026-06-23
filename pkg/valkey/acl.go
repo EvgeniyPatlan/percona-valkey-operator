@@ -80,8 +80,20 @@ type SystemUser struct {
 // (acl|setuser/deluser stay denied), so the orchestration-only trust boundary is
 // preserved (an _operator credential still cannot read the keyspace or rewrite
 // grants, only reload the file the operator already controls).
+//
+// +acl|list is the READ-ONLY companion to +acl|load: liveReloadAuth reads the
+// node's currently-loaded rules back (ACL LIST) to VERIFY the ACL LOAD actually
+// picked up the freshly rendered aclfile. Kubernetes Secret-mount projection lags
+// the Secret write, so an ACL LOAD issued immediately can re-read STALE file
+// content, report success, and silently drop the change; comparing loaded-vs-
+// rendered closes that race. It is read-only introspection of the operator's OWN
+// rendered ACL — it returns password HASHES (never plaintext), grants NO keyspace
+// access and NO ability to mutate ACLs, so the trust boundary is unchanged in
+// substance (a security review graded the addition LOW: strictly narrower than
+// +acl or +@admin, and the operator already holds every rendered hash). Any
+// change to this string remains a CRITICAL trust-boundary change (07 §10).
 const operatorRules = "resetchannels resetkeys -@all +cluster +config|get +config|set +info " +
-	"+client|setname +client|setinfo +replicaof +wait +ping +acl|load"
+	"+client|setname +client|setinfo +replicaof +wait +ping +acl|load +acl|list"
 
 // backupRules is the canonical least-privilege _backup grant string. _backup is
 // the snapshot+replication user: it triggers a server-side RDB snapshot and

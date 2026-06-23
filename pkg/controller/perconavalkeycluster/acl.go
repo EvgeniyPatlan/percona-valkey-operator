@@ -182,9 +182,12 @@ func (r *Reconciler) reconcileAuthReload(
 	// booted with the correct material). Only a later change triggers a reload.
 	firstObservation := last == ""
 	if !firstObservation {
-		switch err := r.liveReloadAuth(ctx, cluster, requirepass); {
+		switch err := r.liveReloadAuth(ctx, cluster, aclContent, requirepass); {
 		case errors.Is(err, errAuthReloadPending):
-			// No node reachable yet — do NOT stamp; retry next pass. Not an error.
+			// No node reachable yet, OR a reachable node has not yet had the rendered
+			// aclfile projected into its mount (Secret-mount propagation lag) so its
+			// loaded ACL does not yet match — do NOT stamp; retry next pass until every
+			// reachable node has verifiably loaded the new content. Not an error.
 			return nil
 		case err != nil:
 			return err
@@ -201,7 +204,7 @@ func (r *Reconciler) reconcileAuthReload(
 // node succeeds. Returns an error only when NO node could be reloaded AND nodes
 // were expected (so a genuinely-down cluster is surfaced, not silently ignored).
 func (r *Reconciler) liveReloadAuth(
-	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster, requirepass string,
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster, aclContent, requirepass string,
 ) error {
 	log := logf.FromContext(ctx)
 
@@ -210,7 +213,9 @@ func (r *Reconciler) liveReloadAuth(
 		return fmt.Errorf("auth reload: list nodes: %w", err)
 	}
 
-	reachable, reloaded := 0, 0
+	wantUsers := parseACLUsers(aclContent)
+
+	reachable, reloaded, pending := 0, 0, 0
 	for i := range nodes.Items {
 		node := &nodes.Items[i]
 		if node.Status.PodIP == "" {
@@ -220,34 +225,52 @@ func (r *Reconciler) liveReloadAuth(
 		_, c, derr := r.clientFactory.ForNode(ctx, node)
 		if derr != nil {
 			log.V(1).Info("auth reload: dial failed, skipping node", "node", node.Name, "err", derr.Error())
+			pending++
 			continue
 		}
 		if rerr := reloadNodeAuth(ctx, c, requirepass); rerr != nil {
 			log.V(1).Info("auth reload: command failed, skipping node", "node", node.Name, "err", rerr.Error())
 			_ = c.Close()
+			pending++
 			continue
 		}
+		// Verify the engine actually picked up the freshly rendered aclfile. The
+		// Secret mount projection lags the Secret write, so an ACL LOAD issued
+		// immediately can re-read STALE file content and report success while
+		// loading nothing new — comparing the loaded users back against the rendered
+		// set closes that race so the change is never silently dropped.
+		ok, verr := nodeACLMatches(ctx, c, wantUsers)
 		_ = c.Close()
+		if verr != nil {
+			log.V(1).Info("auth reload: verify failed, will retry node", "node", node.Name, "err", verr.Error())
+			pending++
+			continue
+		}
+		if !ok {
+			log.V(1).Info("auth reload: node aclfile not yet propagated, will retry", "node", node.Name)
+			pending++
+			continue
+		}
 		reloaded++
 	}
 
-	if reloaded == 0 {
+	if pending > 0 || reloaded == 0 {
 		if reachable == 0 {
 			// No node is reachable yet (cluster still coming up). Not an error: leave
 			// the signature unstamped so the next pass retries when pods are ready.
 			return errAuthReloadPending
 		}
-		// Nodes are reachable but NONE accepted the live reload — e.g. the running
-		// ACL predates a newly-added system-user grant (notably +acl|load), so the
-		// engine rejects ACL LOAD with NOPERM. This is NOT fatal: the rewritten
-		// aclfile is already mounted, so the change takes effect on the node's next
-		// restart. Stay pending (retry) instead of failing the cluster — a
-		// system-user GRANT change the running ACL forbids needs a pod roll to
-		// apply; live reload only covers password/user-data changes the current
-		// grants already permit.
-		log.Info("auth reload: no reachable node accepted the live reload; "+
-			"change applies on the next pod restart (running ACL likely predates a new system-user grant)",
-			"reachable", reachable)
+		// At least one reachable node has NOT yet verifiably loaded the rendered ACL.
+		// Causes: (a) the running ACL predates a newly-added system-user grant
+		// (notably +acl|load), so the engine rejects ACL LOAD with NOPERM — applies
+		// on the node's next restart; (b) the Secret mount has not yet projected the
+		// new file (kubelet propagation lag) so the loaded ACL still mismatches.
+		// Either way stay pending and retry: the signature is NOT stamped until EVERY
+		// reachable node has verifiably loaded the new content, so a partially-
+		// propagated change can never be lost by stamping early.
+		log.Info("auth reload: not all reachable nodes have loaded the rendered ACL yet; "+
+			"staying pending (retry next reconcile)",
+			"reachable", reachable, "verified", reloaded, "pending", pending)
 		return errAuthReloadPending
 	}
 	r.recorder.Eventf(cluster, nil, eventNormal, EventAuthReloaded, "AuthReload",
@@ -277,6 +300,127 @@ func reloadNodeAuth(ctx context.Context, c valkey.ClusterClient, requirepass str
 		return err
 	}
 	return nil
+}
+
+// aclUserRules is the comparable slice of one ACL user's rules — the parts the
+// engine preserves losslessly across an ACL LOAD, so a loaded-vs-rendered
+// comparison is robust to the engine's flag normalisation. It deliberately
+// EXCLUDES key/channel patterns (~* / &* / resetkeys / allkeys / resetchannels /
+// allchannels) and the implicit alldbs / sanitize-payload defaults, which Valkey
+// rewrites/expands on load so they never match the rendered aclfile literally.
+type aclUserRules struct {
+	// enabled is the on/off state token ("on", "off", or "" when absent).
+	enabled string
+	// passwords are the password entries (#<sha256> / ><pw> / <<pw>) — the exact
+	// thing a password rotation changes.
+	passwords map[string]struct{}
+	// commands are the +cmd/-cmd command grants (incl. categories like +@read),
+	// the exact thing a grant change touches. The implicit baseline -@all the
+	// engine prepends to a non-+@all user is normalised away in equalACLRules so
+	// the rendered file (which omits it) still compares equal.
+	commands map[string]struct{}
+}
+
+// parseACLUsers parses an aclfile / ACL LIST body into username -> aclUserRules.
+// Each non-blank line is "user <name> <token>..."; only the enabled/password/
+// command tokens are retained (see aclUserRules). Blank/malformed lines skipped.
+func parseACLUsers(body string) map[string]aclUserRules {
+	users := map[string]aclUserRules{}
+	for _, line := range strings.Split(body, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "user" {
+			continue
+		}
+		r := aclUserRules{passwords: map[string]struct{}{}, commands: map[string]struct{}{}}
+		for _, t := range fields[2:] {
+			switch {
+			case t == "on" || t == "off":
+				r.enabled = t
+			case t == "nopass":
+				r.passwords[t] = struct{}{}
+			case t != "" && (t[0] == '#' || t[0] == '>' || t[0] == '<'):
+				r.passwords[t] = struct{}{}
+			case t != "" && (t[0] == '+' || t[0] == '-'):
+				r.commands[t] = struct{}{}
+			}
+		}
+		users[fields[1]] = r
+	}
+	return users
+}
+
+// nodeACLMatches reads the node's currently-loaded ACL (ACL LIST) and reports
+// whether every rendered user is present with equivalent enabled/password/command
+// rules — i.e. the engine has actually loaded the freshly rendered aclfile and
+// not stale mounted content. Extra users on the node (not in want) are tolerated
+// so a yet-to-be-removed user during propagation does not block the rest. Any
+// read error is returned so the caller treats the node as pending and retries.
+func nodeACLMatches(ctx context.Context, c valkey.ClusterClient, want map[string]aclUserRules) (bool, error) {
+	lines, err := c.ACLList(ctx)
+	if err != nil {
+		return false, err
+	}
+	got := parseACLUsers(strings.Join(lines, "\n"))
+	for name, wantRules := range want {
+		gotRules, ok := got[name]
+		if !ok || !equalACLRules(wantRules, gotRules) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// equalACLRules reports whether a rendered user's rules match the loaded ones,
+// tolerating the engine's normalisation: the enabled state and password set must
+// match exactly, and the command-grant sets must match after dropping the
+// implicit baseline "-@all" that the engine prepends to any non-+@all user (the
+// rendered aclfile omits it). A genuine grant difference — e.g. a stale node
+// still carrying a +@write the rendered file dropped, or missing a newly added
+// grant — leaves the command sets unequal and is correctly reported as a
+// mismatch, which is exactly the propagation-lag / silent-drop case this guards.
+func equalACLRules(want, got aclUserRules) bool {
+	if want.enabled != got.enabled {
+		return false
+	}
+	if !tokenSetsEqual(want.passwords, got.passwords) {
+		return false
+	}
+	wantCmds := normalizeBaselineDeny(want.commands)
+	gotCmds := normalizeBaselineDeny(got.commands)
+	return tokenSetsEqual(wantCmds, gotCmds)
+}
+
+// normalizeBaselineDeny returns a copy of the command set without the implicit
+// "-@all" baseline UNLESS "-@all" is the user's only command token (a genuine
+// deny-everything grant). Valkey prepends "-@all" to every user that is not
+// explicitly +@all, so the rendered aclfile (which omits it) and ACL LIST (which
+// shows it) only differ by that token; dropping it makes them comparable while
+// still distinguishing a real +/-cmd change.
+func normalizeBaselineDeny(cmds map[string]struct{}) map[string]struct{} {
+	if _, ok := cmds["-@all"]; !ok || len(cmds) <= 1 {
+		return cmds
+	}
+	out := make(map[string]struct{}, len(cmds)-1)
+	for t := range cmds {
+		if t == "-@all" {
+			continue
+		}
+		out[t] = struct{}{}
+	}
+	return out
+}
+
+// tokenSetsEqual reports whether two token sets are identical.
+func tokenSetsEqual(a, b map[string]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for t := range a {
+		if _, ok := b[t]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // authSignature is the SHA-256 (hex) of the rendered auth material — the users.acl

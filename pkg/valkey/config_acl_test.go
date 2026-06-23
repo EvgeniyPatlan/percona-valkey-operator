@@ -97,7 +97,11 @@ const (
 	// +acl|load lets the operator reload the rewritten aclfile in place (live auth
 	// reload, acl.go liveReloadAuth); it is the aclfile-reload subcommand only and
 	// grants no ad-hoc ACL mutation, preserving the orchestration-only boundary.
-	wantOperatorRules   = wantOperatorBaseRules + " +acl|load"
+	// +acl|list is its READ-ONLY companion: liveReloadAuth reads the loaded ACL back
+	// to verify the ACL LOAD actually picked up the freshly rendered file (closing
+	// the Secret-mount propagation race). It returns password hashes only, no
+	// keyspace, no mutation — graded LOW by security review (07 §10).
+	wantOperatorRules   = wantOperatorBaseRules + " +acl|load +acl|list"
 	wantExporterRules   = "resetchannels resetkeys -@all +info +cluster|info +latency +ping"
 	wantBackupBaseRules = "resetchannels resetkeys -@all +bgsave +lastsave +save +info +wait +ping"
 	// +cluster|nodes lets the backup Job scrape CLUSTER NODES to resolve shard

@@ -23,7 +23,11 @@ import (
 	"strings"
 	"sync"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
+	"valkey.percona.com/percona-valkey-operator/pkg/naming"
 	"valkey.percona.com/percona-valkey-operator/pkg/valkey"
 )
 
@@ -176,13 +180,20 @@ func (f *fakeClientFactory) ForNode(_ context.Context, node *valkeyv1alpha1.Valk
 	f.fc.mu.Lock()
 	f.fc.register(addr, shard, idx)
 	f.fc.mu.Unlock()
-	return addr, &fakeNode{fc: f.fc, addr: addr}, nil
+	return addr, &fakeNode{
+		fc:        f.fc,
+		addr:      addr,
+		cluster:   node.Labels["valkey.percona.com/cluster"],
+		namespace: node.Namespace,
+	}, nil
 }
 
 // fakeNode is a valkey.ClusterClient bound to one simulated node.
 type fakeNode struct {
-	fc   *fakeCluster
-	addr string
+	fc        *fakeCluster
+	addr      string
+	cluster   string
+	namespace string
 }
 
 func (n *fakeNode) self() *fakeNodeState { return n.fc.nodes[n.addr] }
@@ -290,6 +301,27 @@ func (n *fakeNode) ACLLoad(context.Context) error {
 	defer n.fc.mu.Unlock()
 	n.record("ACLLOAD", "")
 	return nil
+}
+
+// ACLList models the engine's currently-loaded ACL by returning the lines of the
+// cluster's rendered internal-<cluster>-acl Secret — i.e. zero Secret-mount
+// propagation lag, the normal steady state once the kubelet has projected the
+// file. The operator's liveReloadAuth verifies the loaded ACL against the
+// rendered content via this call; modelling it as always-current keeps the
+// happy-path reload deterministic under envtest (the real-cluster propagation
+// race is covered by the parseACLUsers/nodeACLMatches unit tests).
+func (n *fakeNode) ACLList(ctx context.Context) ([]string, error) {
+	if n.cluster == "" {
+		return nil, nil
+	}
+	sec := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: n.namespace, Name: naming.ACLSecretName(n.cluster)}
+	if err := k8sClient.Get(ctx, key, sec); err != nil {
+		// No rendered ACL yet (pre-bootstrap): report nothing loaded.
+		return nil, nil //nolint:nilerr // absence is "nothing loaded", not a failure
+	}
+	body := string(sec.Data[valkey.ACLFileKey])
+	return strings.Split(strings.TrimRight(body, "\n"), "\n"), nil
 }
 
 func (n *fakeNode) ClusterSetConfigEpoch(_ context.Context, _ int64) error {
