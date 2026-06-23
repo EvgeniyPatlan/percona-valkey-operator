@@ -101,21 +101,56 @@ func TestPodSecurityContextApplied(t *testing.T) {
 	}
 }
 
-// TestSecurityContextNilWhenUnset verifies the no-context case leaves the pod and
-// container SecurityContexts nil (no phantom defaults — let the API/PSA decide).
-func TestSecurityContextNilWhenUnset(t *testing.T) {
+// TestSecurityContextDefaultsFSGroupWhenUnset verifies that when
+// spec.podSecurityContext is unset the pod SecurityContext is materialized carrying
+// ONLY the default fsGroup (998 — the percona/valkey image uid) so a CSI-provisioned
+// /data is group-owned and writable, while every other pod SecurityContext field
+// stays zero and the container SecurityContext remains nil (no phantom container
+// defaults — let the API/PSA decide those).
+func TestSecurityContextDefaultsFSGroupWhenUnset(t *testing.T) {
 	node := unitNode("mycluster-0-0")
 	labels := naming.NodeLabels(node.Name, node.Labels)
 	sts, err := buildStatefulSet(node, labels)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sts.Spec.Template.Spec.SecurityContext != nil {
-		t.Errorf("pod SecurityContext should be nil when unset, got %+v", sts.Spec.Template.Spec.SecurityContext)
+	psc := sts.Spec.Template.Spec.SecurityContext
+	if psc == nil {
+		t.Fatal("pod SecurityContext should default fsGroup when unset, got nil")
+	}
+	if psc.FSGroup == nil || *psc.FSGroup != defaultValkeyFSGroup {
+		t.Errorf("pod SecurityContext fsGroup = %v, want %d", psc.FSGroup, defaultValkeyFSGroup)
+	}
+	if psc.RunAsUser != nil || psc.RunAsGroup != nil || psc.FSGroupChangePolicy != nil {
+		t.Errorf("only fsGroup should be defaulted, got %+v", psc)
 	}
 	server := containerByName(sts.Spec.Template.Spec.Containers, serverContainerName)
 	if server.SecurityContext != nil {
 		t.Errorf("server SecurityContext should be nil when unset, got %+v", server.SecurityContext)
+	}
+}
+
+// TestFSGroupUserValueWins verifies a user-supplied fsGroup is honoured verbatim
+// (the default never clobbers it) and the rest of the user's pod SecurityContext is
+// preserved.
+func TestFSGroupUserValueWins(t *testing.T) {
+	node := unitNode("mycluster-0-0")
+	userFSGroup := int64(2000)
+	runAsUser := int64(2001)
+	node.Spec.PodSecurityContext = &corev1.PodSecurityContext{
+		FSGroup:   &userFSGroup,
+		RunAsUser: &runAsUser,
+	}
+	psc := podSecurityContext(node)
+	if psc.FSGroup == nil || *psc.FSGroup != userFSGroup {
+		t.Errorf("user fsGroup must win: got %v, want %d", psc.FSGroup, userFSGroup)
+	}
+	if psc.RunAsUser == nil || *psc.RunAsUser != runAsUser {
+		t.Errorf("user runAsUser must be preserved: got %v", psc.RunAsUser)
+	}
+	// The builder must not mutate the caller's input.
+	if node.Spec.PodSecurityContext.FSGroup == nil || *node.Spec.PodSecurityContext.FSGroup != userFSGroup {
+		t.Error("podSecurityContext mutated the input spec")
 	}
 }
 
@@ -480,5 +515,126 @@ func TestDHParamsSecretName(t *testing.T) {
 	}
 	if got := dhParamsSecretName(withDH); got != "dh" {
 		t.Errorf("dhParamsSecretName(with dhParamsSecret) = %q, want %q", got, "dh")
+	}
+}
+
+// cmdContains reports whether the argv contains flag immediately followed by value.
+func cmdContains(cmd []string, flag, value string) bool {
+	for i := 0; i+1 < len(cmd); i++ {
+		if cmd[i] == flag && cmd[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAnnounceFallsBackToPodIP verifies that with no external announce address the
+// server boots with --cluster-announce-ip $(POD_IP) and no --cluster-announce-port
+// (the in-cluster downward-API default).
+func TestAnnounceFallsBackToPodIP(t *testing.T) {
+	node := unitNode("mycluster-0-0")
+	cmd := buildServerContainer(node).Command
+	if !cmdContains(cmd, "--cluster-announce-ip", "$("+envPodIP+")") {
+		t.Errorf("expected POD_IP announce fallback, got %v", cmd)
+	}
+	if hasArg(cmd, "--cluster-announce-port") {
+		t.Errorf("no announce-port expected without an external address, got %v", cmd)
+	}
+}
+
+// TestAnnounceExternalHostAndPort verifies spec.announceHost/announcePort render
+// --cluster-announce-ip <host> --cluster-announce-port <port> (the expose.perPod
+// external address) instead of the POD_IP fallback.
+func TestAnnounceExternalHostAndPort(t *testing.T) {
+	node := unitNode("mycluster-0-0")
+	port := int32(31999)
+	node.Spec.AnnounceHost = "203.0.113.5"
+	node.Spec.AnnouncePort = &port
+	cmd := buildServerContainer(node).Command
+	if !cmdContains(cmd, "--cluster-announce-ip", "203.0.113.5") {
+		t.Errorf("expected external announce host, got %v", cmd)
+	}
+	if !cmdContains(cmd, "--cluster-announce-port", "31999") {
+		t.Errorf("expected external announce port, got %v", cmd)
+	}
+	if hasArg(cmd, "$("+envPodIP+")") {
+		t.Errorf("POD_IP must not be announced when an external host is set, got %v", cmd)
+	}
+}
+
+// TestAnnounceHostWithoutPort verifies an announceHost with a nil announcePort
+// advertises the host with no explicit port (the engine uses the default client
+// port).
+func TestAnnounceHostWithoutPort(t *testing.T) {
+	node := unitNode("mycluster-0-0")
+	node.Spec.AnnounceHost = "lb.example.com"
+	cmd := buildServerContainer(node).Command
+	if !cmdContains(cmd, "--cluster-announce-ip", "lb.example.com") {
+		t.Errorf("expected external announce host, got %v", cmd)
+	}
+	if hasArg(cmd, "--cluster-announce-port") {
+		t.Errorf("no announce-port expected when announcePort is nil, got %v", cmd)
+	}
+}
+
+// TestRestoreSeedInitContainerInjected verifies that when spec.restoreFrom is set
+// the pod template carries the restore-seed init container (running
+// /valkey-backup --download --shard=<i> into the data volume) and the server boots
+// with --appendonly no so the seeded dump.rdb is loaded (CR-8 / 06 §7.4).
+func TestRestoreSeedInitContainerInjected(t *testing.T) {
+	node := unitNode("mycluster-2-0")
+	node.Spec.Persistence = &valkeyv1alpha1.PersistenceSpec{}
+	node.Spec.RestoreFrom = &valkeyv1alpha1.RestoreSource{
+		Storage:    "s3-primary",
+		BackupName: "nightly-full",
+		ShardIndex: 2,
+	}
+	labels := naming.NodeLabels(node.Name, node.Labels)
+	sts, err := buildStatefulSet(node, labels)
+	if err != nil {
+		t.Fatalf("buildStatefulSet: %v", err)
+	}
+
+	seed := containerByName(sts.Spec.Template.Spec.InitContainers, restoreSeedContainerName)
+	if seed == nil {
+		t.Fatal("restore-seed init container missing when restoreFrom is set")
+	}
+	if !hasArg(seed.Command, "--download") || !hasArg(seed.Command, "--shard=2") {
+		t.Errorf("restore-seed command = %v, want --download --shard=2", seed.Command)
+	}
+	if seed.Image != node.Spec.Image {
+		t.Errorf("restore-seed image = %q, want the engine image %q", seed.Image, node.Spec.Image)
+	}
+	var mountsData bool
+	for _, m := range seed.VolumeMounts {
+		if m.MountPath == dataMountPath {
+			mountsData = true
+		}
+	}
+	if !mountsData {
+		t.Errorf("restore-seed must mount the data volume at %s, got %+v", dataMountPath, seed.VolumeMounts)
+	}
+
+	server := containerByName(sts.Spec.Template.Spec.Containers, serverContainerName)
+	if !cmdContains(server.Command, "--appendonly", "no") {
+		t.Errorf("seed boot must use --appendonly no, got %v", server.Command)
+	}
+}
+
+// TestNoInitContainerWithoutRestore verifies a normal (non-restore) node has no
+// init container and boots with appendonly governed by config (no --appendonly no).
+func TestNoInitContainerWithoutRestore(t *testing.T) {
+	node := unitNode("mycluster-0-0")
+	labels := naming.NodeLabels(node.Name, node.Labels)
+	sts, err := buildStatefulSet(node, labels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sts.Spec.Template.Spec.InitContainers) != 0 {
+		t.Errorf("no init containers expected without restoreFrom, got %+v", sts.Spec.Template.Spec.InitContainers)
+	}
+	server := containerByName(sts.Spec.Template.Spec.Containers, serverContainerName)
+	if cmdContains(server.Command, "--appendonly", "no") {
+		t.Errorf("non-restore node must not force --appendonly no, got %v", server.Command)
 	}
 }

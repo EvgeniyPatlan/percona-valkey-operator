@@ -5889,6 +5889,22 @@ spec:
                         x-kubernetes-list-type: atomic
                     type: object
                 type: object
+              announceHost:
+                description: |-
+                  announceHost is the external address this node advertises to cluster-mode
+                  clients via --cluster-announce-ip (06 expose.perPod). When set the engine
+                  gossips this host instead of the in-cluster POD_IP so a client reaching the
+                  per-pod external Service can follow MOVED/ASK redirects to the same external
+                  address. Empty => the downward-API POD_IP (in-cluster default). Parent writes;
+                  node reads.
+                type: string
+              announcePort:
+                description: |-
+                  announcePort is the external client port advertised alongside announceHost
+                  via --cluster-announce-port (the per-pod external Service's published port).
+                  nil => the default client port (6379). Parent writes; node reads.
+                format: int32
+                type: integer
               automountServiceAccountToken:
                 description: automountServiceAccountToken is propagated from the cluster
                   (default false).
@@ -8223,6 +8239,37 @@ spec:
                       otherwise to an implementation-defined value. Requests cannot exceed Limits.
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
+                type: object
+              restoreFrom:
+                description: |-
+                  restoreFrom, when set, marks this node as a restore-seed target: the node
+                  controller injects an init container that downloads this shard's RDB from
+                  object storage into /data/dump.rdb BEFORE the engine starts, and the engine
+                  boots with appendonly no so it loads the seeded RDB (CR-8 / 06 §7.4). The
+                  parent (cluster controller) writes it from the restore markers; the node
+                  reads it. nil => a normal (non-restore) node. Parent writes; node reads.
+                properties:
+                  backupName:
+                    description: |-
+                      backupName is the backup-set name that derives the object keys
+                      (<cluster>/<backupName>/...).
+                    type: string
+                  shardIndex:
+                    description: |-
+                      shardIndex is the zero-based shard index this node seeds (its RDB fragment in
+                      the backup set).
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  storage:
+                    description: |-
+                      storage is the named backup storage key (in spec.backup.storages) the RDB is
+                      downloaded from.
+                    type: string
+                required:
+                - backupName
+                - shardIndex
+                - storage
                 type: object
               serverConfigHash:
                 description: |-

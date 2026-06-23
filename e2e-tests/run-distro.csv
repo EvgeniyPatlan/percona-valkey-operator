@@ -2,34 +2,32 @@
 #
 # FORMAT: test-name,valkey-version (see run-pr.csv header for the full contract).
 #
-# ENGINE-VERSION GATING (docs/architecture/11-testing-qa.md §3.2 — VERBATIM policy):
-#   Default to 9.0 everywhere (the charter-default image). Run migration/scale tests
-#   (scaling, slot-migration-interrupt, scale-in drain) on 9.0 ONLY — atomic
-#   CLUSTER MIGRATESLOTS / CLUSTER GETSLOTMIGRATIONS require Valkey 9.0+
-#   (see docs/architecture/05-data-plane.md). On 7.2 and 8.0 the migrate subcommand
-#   returns "unknown subcommand"; the operator wraps this as an actionable error and
-#   blocks scale-out/scale-in, so any test that rebalances or drains slots would
-#   (correctly) fail. Keep 7.2/8.0 rows to cluster-mode basics only (init/tls/acl),
-#   where bootstrap uses CLUSTER ADDSLOTSRANGE (the floor for cluster mode + ACL is 7.x).
-#   hack/lint-csv.sh enforces: NEVER list a migration/scale test below 9.0.
+# ENGINE VERSION (collapsed): every row is pinned to 9.1.0 — the only published
+# percona/valkey GA tag. The multi-version fan-out (9.0/8.0/7.2) is collapsed to the
+# 9.x line because percona/valkey publishes no 8.x/7.2 images, so `image:
+# percona/valkey:8.0` etc. would not exist. Re-introduce the per-minor rows once those
+# engine tags are published (and restore the 7.2/8.0 cluster-mode-basics gating below).
+#
+# ENGINE-VERSION GATING (docs/architecture/11-testing-qa.md §3.2 — policy, in force
+# once older lines return): default to the charter engine everywhere. Run
+# migration/scale tests (scaling, slot-migration-interrupt, scale-in drain) on 9.x
+# ONLY — atomic CLUSTER MIGRATESLOTS / CLUSTER GETSLOTMIGRATIONS require Valkey 9.0+
+# (see docs/architecture/05-data-plane.md). On 7.2 and 8.0 the migrate subcommand
+# returns "unknown subcommand"; the operator wraps this as an actionable error and
+# blocks scale-out/scale-in, so any test that rebalances or drains slots would
+# (correctly) fail. Keep future 7.2/8.0 rows to cluster-mode basics only
+# (init/tls/acl), where bootstrap uses CLUSTER ADDSLOTSRANGE (the floor for cluster
+# mode + ACL is 7.x). hack/lint-csv.sh enforces: NEVER list a migration/scale test on
+# an engine below the migration floor.
 #
 # test-name,valkey-version
-init-cluster,9.0
-init-cluster,8.0
-init-cluster,7.2
-tls,9.0
-tls,8.0
-tls,7.2
-acl-users,9.0
-acl-users,8.0
-acl-users,7.2
-config-rolling-update,9.0
-config-rolling-update,8.0
-demand-backup-s3,9.0
-demand-backup-s3,8.0
-restore,9.0
-restore,8.0
-# --- 9.0-only below: these rebalance or drain slots (MIGRATESLOTS/GETSLOTMIGRATIONS) ---
-scaling,9.0
-slot-migration-interrupt,9.0
-failover-kill-primary,9.0
+init-cluster,9.1.0
+tls,9.1.0
+acl-users,9.1.0
+config-rolling-update,9.1.0
+demand-backup-s3,9.1.0
+restore,9.1.0
+# --- migration/scale (9.x-only): these rebalance or drain slots (MIGRATESLOTS/GETSLOTMIGRATIONS) ---
+scaling,9.1.0
+slot-migration-interrupt,9.1.0
+failover-kill-primary,9.1.0

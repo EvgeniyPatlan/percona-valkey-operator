@@ -84,7 +84,7 @@ func (r *Reconciler) reconcileProvisioning(ctx context.Context, rst *valkeyv1alp
 		return ctrl.Result{}, r.fail(ctx, rst, "ManifestUnavailable", err)
 	}
 
-	cluster, err := r.provisionTargetCluster(ctx, rst, man)
+	cluster, err := r.provisionTargetCluster(ctx, rst, src, man)
 	if err != nil {
 		return ctrl.Result{}, r.fail(ctx, rst, "ProvisionFailed", err)
 	}
@@ -120,11 +120,13 @@ func (r *Reconciler) reconcileSeeding(ctx context.Context, rst *valkeyv1alpha1.P
 		if rerr != nil {
 			return ctrl.Result{}, r.fail(ctx, rst, "SourceResolveFailed", rerr)
 		}
-		man, merr := r.readManifest(ctx, src)
-		if merr != nil {
+		// Re-read the manifest as a guard: re-stamping markers for a source whose
+		// backup-set vanished mid-restore must fail loudly rather than seed an
+		// unrecoverable cluster (06 §9.3).
+		if _, merr := r.readManifest(ctx, src); merr != nil {
 			return ctrl.Result{}, r.fail(ctx, rst, "ManifestUnavailable", merr)
 		}
-		if serr := r.stampRestoreMarkers(ctx, cluster, rst, man); serr != nil {
+		if serr := r.stampRestoreMarkers(ctx, cluster, rst, src); serr != nil {
 			return ctrl.Result{}, r.fail(ctx, rst, "SeedMarkerFailed", serr)
 		}
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil

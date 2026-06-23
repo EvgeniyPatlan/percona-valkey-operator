@@ -22,6 +22,8 @@ import (
 	"slices"
 	"strconv"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -30,6 +32,12 @@ import (
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
 	"valkey.percona.com/percona-valkey-operator/pkg/naming"
 )
+
+// EventTLSSecretCleanedUp is emitted when the delete-ssl finalizer deletes the
+// orphaned operator-issued (cert-manager-written) TLS Secret on teardown — the
+// one not reaped by owner-ref GC. Declared here in the finalizer leg (not
+// status.go) to keep the leg's event vocabulary self-contained.
+const EventTLSSecretCleanedUp = "TLSSecretCleanedUp"
 
 // ensureFinalizers adds the cluster teardown finalizers (delete-pods-in-order +
 // delete-ssl) if absent and persists them, leaving them on the in-memory object
@@ -124,12 +132,73 @@ func (r *Reconciler) handleDeletion(ctx context.Context, cluster *valkeyv1alpha1
 	return ctrl.Result{}, nil
 }
 
-// cleanupTLS is the delete-ssl finalizer body: a no-op stub until M5 provisions
-// operator-issued TLS material (04 §6.1 / scope: TLS provisioning is M5). It
-// exists so the finalizer is real and the teardown flow is complete now.
-func (r *Reconciler) cleanupTLS(_ context.Context, _ *valkeyv1alpha1.PerconaValkeyCluster) error {
-	// TODO(M5): delete operator-issued TLS material not GC'd by owner refs.
+// cleanupTLS is the delete-ssl finalizer body: it deletes operator-issued TLS
+// material that owner-ref GC does NOT reap on cluster teardown (04 §6.1).
+//
+// In cert-manager mode the operator provisions a cert-manager Certificate named
+// naming.TLSSecretName(cluster) that IS owner-referenced to the cluster (so it is
+// GC'd automatically). cert-manager, however, writes the actual TLS Secret of the
+// SAME name with an owner reference to the CERTIFICATE — not to our cluster — so
+// when the cluster (and with it the Certificate) is deleted, that Secret is
+// orphaned: nothing in the owner-ref graph reaps it, and it lingers holding the
+// cluster's private key. This finalizer body deletes it explicitly.
+//
+// It is scoped to cert-manager mode only: in secret-ref (bring-your-own) mode the
+// Secret is user-owned and the operator must NEVER delete it; TLS-off clusters
+// have no material at all. The delete is idempotent — an already-absent Secret is
+// fine — and it refuses to touch a Secret it does not own (no controller owner-ref
+// to this cluster), so a name collision with a user Secret can never cause the
+// operator to delete data it did not create.
+func (r *Reconciler) cleanupTLS(ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster) error {
+	// Only cert-manager mode leaves an orphaned operator-issued Secret. TLS off or
+	// secret-ref (user-owned) mode: nothing for the operator to clean up.
+	if cluster.Spec.TLS == nil || cluster.Spec.TLS.CertManager == nil {
+		return nil
+	}
+
+	log := logf.FromContext(ctx)
+	name := naming.TLSSecretName(cluster.Name)
+
+	secret := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, secret)
+	if apierrorsIsNotFound(err) {
+		return nil // already gone (cert-manager GC or a prior pass).
+	}
+	if err != nil {
+		return fmt.Errorf("teardown: get TLS Secret %s: %w", name, err)
+	}
+
+	// Defensive: only delete a Secret that carries the operator's component label.
+	// cert-manager copies the labels we set on the Certificate onto the Secret it
+	// issues, so the operator-provisioned Secret is identifiable; a same-named
+	// user Secret (which we must not touch) would not carry it.
+	if !operatorOwnedTLSSecret(secret, cluster.Name) {
+		log.V(1).Info("teardown: TLS Secret not operator-owned, leaving it untouched", "secret", name)
+		return nil
+	}
+
+	if err := r.Delete(ctx, secret); err != nil && !apierrorsIsNotFound(err) {
+		return fmt.Errorf("teardown: delete TLS Secret %s: %w", name, err)
+	}
+	log.Info("teardown: deleted orphaned operator-issued TLS Secret", "secret", name)
+	r.recorder.Eventf(cluster, nil, eventNormal, EventTLSSecretCleanedUp, "TeardownTLS",
+		"deleted orphaned operator-issued TLS Secret %s", name)
 	return nil
+}
+
+// operatorOwnedTLSSecret reports whether the TLS Secret was issued for this
+// cluster by the operator's cert-manager Certificate — identified by the operator
+// component label cert-manager propagates from the Certificate onto the Secret. A
+// Secret lacking that label (e.g. a user's same-named Secret) is left untouched so
+// teardown can never delete data the operator did not create.
+func operatorOwnedTLSSecret(secret *corev1.Secret, cluster string) bool {
+	want := naming.Labels(cluster, naming.ComponentValkey)
+	for k, v := range want {
+		if secret.Labels[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // nextTeardownNode returns the single ValkeyNode to delete next in ordered

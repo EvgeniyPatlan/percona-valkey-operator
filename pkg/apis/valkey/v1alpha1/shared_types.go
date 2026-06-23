@@ -621,6 +621,28 @@ type ShardBackupStatus struct {
 // Restore sub-structs (03 §8.1)
 // ----------------------------------------------------------------------------
 
+// RestoreSource is the per-node restore-seed marker the cluster controller writes
+// onto ValkeyNodeSpec.RestoreFrom (CR-8 / 06 §7.4). It carries the minimal
+// coordinates the restore-seed init container needs to download exactly one
+// shard's RDB: the named storage backend (a key in the resolved cluster
+// spec.backup.storages), the backup-set name (derives the object keys), and the
+// zero-based shard index this node seeds. The full storage type/coordinates are
+// resolved by the controller from the named storage and passed to the seed init
+// container via the VALKEY_BACKUP_* env contract (pkg/backup); this struct stays a
+// compact reference so the node CR does not duplicate the storage definition.
+type RestoreSource struct {
+	// storage is the named backup storage key (in spec.backup.storages) the RDB is
+	// downloaded from.
+	Storage string `json:"storage"`
+	// backupName is the backup-set name that derives the object keys
+	// (<cluster>/<backupName>/...).
+	BackupName string `json:"backupName"`
+	// shardIndex is the zero-based shard index this node seeds (its RDB fragment in
+	// the backup set).
+	// +kubebuilder:validation:Minimum=0
+	ShardIndex int32 `json:"shardIndex"`
+}
+
 // BackupSource is an inline restore source (for restoring from an artifact whose
 // PerconaValkeyBackup CR no longer exists), hydrated from a
 // PerconaValkeyBackup.status.

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -59,6 +60,18 @@ const (
 	serverContainerName = "server"
 	// exporterContainerName is the exporter sidecar container name.
 	exporterContainerName = "metrics-exporter"
+	// restoreSeedContainerName is the restore-seed init container name (CR-8 /
+	// 06 §7.4): it downloads this shard's RDB into /data/dump.rdb before the engine
+	// starts when node.Spec.RestoreFrom is set.
+	restoreSeedContainerName = "restore-seed"
+
+	// defaultValkeyFSGroup is the gid the pod-level securityContext.fsGroup defaults
+	// to when spec.podSecurityContext.fsGroup is nil. The percona/valkey image runs
+	// the engine as uid 998; without an fsGroup the kubelet leaves a CSI-provisioned
+	// /data owned by root, so uid 998 cannot write the RDB/AOF (a fail-to-start on
+	// many CSI backends). Setting fsGroup=998 makes the kubelet chown the volume to
+	// the engine's group so /data is writable. A user-supplied fsGroup always wins.
+	defaultValkeyFSGroup int64 = 998
 
 	// Volume / mount names and paths. The data volume name is derived from the
 	// PVC/volumeClaimTemplate name (valkey-<node>-data), so there is no fixed
@@ -291,11 +304,8 @@ func buildServerContainer(node *valkeyv1alpha1.ValkeyNode) corev1.Container {
 		Name:      serverContainerName,
 		Image:     serverImage(node),
 		Resources: node.Spec.Resources,
-		Command: []string{
-			"valkey-server", configMountPath + "/valkey.conf",
-			"--cluster-announce-ip", "$(" + envPodIP + ")",
-		},
-		Env: mergeServerEnv(managedEnv, node.Spec.Env, node.Spec.ExtraEnvVars),
+		Command:   serverCommand(node),
+		Env:       mergeServerEnv(managedEnv, node.Spec.Env, node.Spec.ExtraEnvVars),
 		Ports: []corev1.ContainerPort{
 			{Name: "client", ContainerPort: portClient},
 			{Name: "cluster-bus", ContainerPort: portBus},
@@ -306,10 +316,49 @@ func buildServerContainer(node *valkeyv1alpha1.ValkeyNode) corev1.Container {
 		VolumeMounts:    mounts,
 		SecurityContext: node.Spec.ContainerSecurityContext,
 	}
-	if node.Spec.ACLSecretName != "" {
-		c.Command = append(c.Command, "--aclfile", aclFilePath)
-	}
 	return c
+}
+
+// serverCommand builds the valkey-server argv. The base is the mounted
+// valkey.conf, plus:
+//
+//   - the cluster-announce wiring: --cluster-announce-ip/--cluster-announce-port
+//     from spec.announceHost/announcePort when the parent set an EXTERNAL address
+//     (expose.perPod), else the in-cluster downward-API $(POD_IP) on the default
+//     client port (the historical behaviour).
+//   - --aclfile when an ACL Secret is mounted.
+//   - --appendonly no when spec.restoreFrom is set, so the seeded /data/dump.rdb is
+//     loaded on boot instead of an (empty) AOF (CR-8 / 06 §7.4); AOF is re-enabled
+//     live (CONFIG SET appendonly yes) by the controller once the keyspace loads.
+func serverCommand(node *valkeyv1alpha1.ValkeyNode) []string {
+	cmd := []string{"valkey-server", configMountPath + "/valkey.conf"}
+	cmd = append(cmd, announceArgs(node)...)
+	if node.Spec.ACLSecretName != "" {
+		cmd = append(cmd, "--aclfile", aclFilePath)
+	}
+	if node.Spec.RestoreFrom != nil {
+		// Seed boot: load the downloaded dump.rdb, never an empty AOF.
+		cmd = append(cmd, "--appendonly", "no")
+	}
+	return cmd
+}
+
+// announceArgs returns the --cluster-announce-ip (and, when an external port is
+// set, --cluster-announce-port) args. When spec.announceHost is set the engine
+// gossips that EXTERNAL address so a cluster-mode client reaching the per-pod
+// external Service can follow MOVED/ASK redirects to the same address; otherwise
+// it falls back to the downward-API $(POD_IP) (in-cluster default). A nil/zero
+// announcePort with an announceHost set advertises the host on the default client
+// port (the cluster bus port is derived by the engine as port+10000).
+func announceArgs(node *valkeyv1alpha1.ValkeyNode) []string {
+	if node.Spec.AnnounceHost == "" {
+		return []string{"--cluster-announce-ip", "$(" + envPodIP + ")"}
+	}
+	args := []string{"--cluster-announce-ip", node.Spec.AnnounceHost}
+	if node.Spec.AnnouncePort != nil && *node.Spec.AnnouncePort > 0 {
+		args = append(args, "--cluster-announce-port", strconv.Itoa(int(*node.Spec.AnnouncePort)))
+	}
+	return args
 }
 
 // exporterScrapeArgs returns the exporter args for scraping the co-located Valkey
@@ -554,13 +603,14 @@ func buildPodTemplate(node *valkeyv1alpha1.ValkeyNode, labels map[string]string)
 		ObjectMeta: metav1.ObjectMeta{Labels: labels},
 		Spec: corev1.PodSpec{
 			Containers:                   containers,
+			InitContainers:               buildInitContainers(node),
 			ImagePullSecrets:             node.Spec.ImagePullSecrets,
 			NodeSelector:                 node.Spec.NodeSelector,
 			Affinity:                     node.Spec.Affinity,
 			Tolerations:                  node.Spec.Tolerations,
 			TopologySpreadConstraints:    node.Spec.TopologySpreadConstraints,
 			Volumes:                      buildVolumes(node),
-			SecurityContext:              node.Spec.PodSecurityContext,
+			SecurityContext:              podSecurityContext(node),
 			ServiceAccountName:           node.Spec.ServiceAccountName,
 			AutomountServiceAccountToken: node.Spec.AutomountServiceAccountToken,
 		},
@@ -598,6 +648,64 @@ func applyTLSHashAnnotation(tmpl *corev1.PodTemplateSpec, hash string) {
 		tmpl.Annotations = map[string]string{}
 	}
 	tmpl.Annotations[naming.AnnTLSHash] = hash
+}
+
+// podSecurityContext returns the pod-level SecurityContext to apply, defaulting
+// fsGroup to defaultValkeyFSGroup (998 — the percona/valkey image uid) when the
+// propagated spec.podSecurityContext leaves it nil, so a CSI-provisioned /data is
+// group-owned by the engine and writable on boot. A user-supplied fsGroup (or any
+// other field) always wins; the input is never mutated (a copy is returned). nil
+// in => a fresh SecurityContext carrying only the default fsGroup.
+func podSecurityContext(node *valkeyv1alpha1.ValkeyNode) *corev1.PodSecurityContext {
+	src := node.Spec.PodSecurityContext
+	if src != nil && src.FSGroup != nil {
+		return src // user set fsGroup explicitly — honour it verbatim.
+	}
+	var out corev1.PodSecurityContext
+	if src != nil {
+		out = *src.DeepCopy()
+	}
+	fsGroup := defaultValkeyFSGroup
+	out.FSGroup = &fsGroup
+	return &out
+}
+
+// buildInitContainers returns the pod init containers. When spec.restoreFrom is set
+// it injects the restore-seed init container that downloads this shard's RDB into
+// /data/dump.rdb before the engine boots (CR-8 / 06 §7.4); otherwise it is empty.
+func buildInitContainers(node *valkeyv1alpha1.ValkeyNode) []corev1.Container {
+	if node.Spec.RestoreFrom == nil {
+		return nil
+	}
+	return []corev1.Container{buildRestoreSeedContainer(node)}
+}
+
+// buildRestoreSeedContainer builds the restore-seed init container (CR-8 /
+// 06 §7.4): it runs cmd/valkey-backup --download --shard=<i> in the DB image to
+// fetch this node's shard RDB into the shared data volume at /data/dump.rdb BEFORE
+// the engine starts, verifying the SHA-256 against the manifest (the sidecar fails
+// pod start on mismatch, 06 §9.3). The storage type/coordinates + cluster/backup
+// names that derive the object keys are passed by the restore leg via the
+// VALKEY_BACKUP_* env contract (it wires the env + credentials when it stamps
+// spec.restoreFrom); this builder owns only the container shape (image, the
+// --download/--shard flags, and the data-volume mount) so the seed mechanism is
+// rendered identically by the node controller regardless of which leg triggers it.
+func buildRestoreSeedContainer(node *valkeyv1alpha1.ValkeyNode) corev1.Container {
+	mounts := []corev1.VolumeMount{}
+	if node.Spec.Persistence != nil {
+		mounts = append(mounts, corev1.VolumeMount{Name: naming.NodePVCName(node.Name), MountPath: dataMountPath})
+	}
+	return corev1.Container{
+		Name:  restoreSeedContainerName,
+		Image: serverImage(node),
+		Command: []string{
+			"/valkey-backup",
+			"--download",
+			"--shard=" + strconv.Itoa(int(node.Spec.RestoreFrom.ShardIndex)),
+		},
+		VolumeMounts:    mounts,
+		SecurityContext: node.Spec.ContainerSecurityContext,
+	}
 }
 
 // buildStatefulSet builds the 1-replica durable StatefulSet with a

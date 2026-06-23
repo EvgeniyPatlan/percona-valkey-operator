@@ -1,25 +1,31 @@
 # run-pr.csv — PR / smoke matrix (the fast gate Jenkins runs post-merge per PR).
 #
-# FORMAT: one row per (test-name, valkey-engine-major-version). The same test runs
+# FORMAT: one row per (test-name, valkey-engine-version). The same test runs
 # once per listed engine version, so a test fans out across versions by adding rows.
 # test-name MUST be a directory under e2e-tests/tests/. Lines starting with '#' and
 # blank lines are ignored. (docs/architecture/11-testing-qa.md §3.2)
 #
-# This is the smoke suite: every case on the charter-default engine (9.0) only.
+# This is the smoke suite: every case on the charter-default engine only.
 # Keep it small and fast — it is the per-PR signal, not the full matrix.
+#
+# ENGINE VERSION: pinned to 9.1.0 — the only published percona/valkey GA tag. The CR
+# templates substitute it into `image: percona/valkey:${VALKEY_VERSION}`, so the tag
+# MUST exist on the registry. The older 9.0/8.0/7.2 lines are collapsed to 9.1.0 until
+# percona/valkey publishes those engine tags; re-add multi-version rows then (and
+# restore the migration-gate floor in hack/lint-csv.sh).
 #
 # WHY a CSV and not a hard-coded list: the engine-version fan-out and the per-suite
 # selection (pr / distro / minikube / release) are DATA, read by the Jenkinsfile and
 # by hack/lint-csv.sh. A typo in the version column silently SKIPS a row in the older
 # bash harnesses; hack/lint-csv.sh turns that silent skip into a hard failure (missing
-# test dir / bad version / migration-or-scale test below 9.0).
+# test dir / bad version / migration-or-scale test on an unsupported engine).
 #
 # test-name,valkey-version
-init-cluster,9.0
-scaling,9.0
-config-rolling-update,9.0
-demand-backup-s3,9.0
-restore,9.0
-tls,9.0
-acl-users,9.0
-failover-kill-primary,9.0
+init-cluster,9.1.0
+scaling,9.1.0
+config-rolling-update,9.1.0
+demand-backup-s3,9.1.0
+restore,9.1.0
+tls,9.1.0
+acl-users,9.1.0
+failover-kill-primary,9.1.0

@@ -425,18 +425,29 @@ func TestAnnotationsContainAndMarkers(t *testing.T) {
 	rst := &valkeyv1alpha1.PerconaValkeyRestore{}
 	rst.Name = "myrestore"
 	rst.Spec.BackupName = "mybackup"
-	markers := restoreMarkerAnnotations(rst)
+	src := resolvedSource{StorageName: "s3-primary"}
+	markers := restoreMarkerAnnotations(rst, src)
 	if markers[annSeedAppendonly] != seedAppendonlyNo {
 		t.Fatalf("markers must carry appendonly-no override")
 	}
 	if markers[annRestoreMarker] != "myrestore/mybackup" {
 		t.Fatalf("restore marker value = %q", markers[annRestoreMarker])
 	}
+	// The resolved named storage is bridged onto the cluster so the cluster
+	// controller's restore-target seam can populate RestoreSource.Storage.
+	if markers[annRestoreStorage] != "s3-primary" {
+		t.Fatalf("storage marker = %q, want s3-primary", markers[annRestoreStorage])
+	}
 	if annotationsContain(nil, markers) {
 		t.Fatalf("nil annotations cannot contain the markers")
 	}
 	if !annotationsContain(markers, markers) {
 		t.Fatalf("a set contains itself")
+	}
+	// An inline source with no named storage omits the storage marker so the seam
+	// falls back to the cluster's own resolved backup storage.
+	if got := restoreMarkerAnnotations(rst, resolvedSource{}); got[annRestoreStorage] != "" {
+		t.Fatalf("no named storage must omit the storage marker, got %q", got[annRestoreStorage])
 	}
 	// backupSource variant of the marker value.
 	rst.Spec.BackupName = ""

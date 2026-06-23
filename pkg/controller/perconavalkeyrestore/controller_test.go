@@ -170,6 +170,10 @@ var _ = ginkgo.Describe("PerconaValkeyRestore controller phase machine", func() 
 		// CR-8 / R3: the seed boot MUST override appendonly to no so dump.rdb loads.
 		gomega.Expect(cluster.Annotations[annSeedAppendonly]).To(gomega.Equal(seedAppendonlyNo))
 		gomega.Expect(cluster.Annotations).To(gomega.HaveKey(annRestoreMarker))
+		// The resolved named storage is bridged onto the target cluster so the cluster
+		// controller's restore-target seam can populate the required per-node
+		// RestoreFrom.Storage the seed init container downloads from.
+		gomega.Expect(cluster.Annotations[annRestoreStorage]).To(gomega.Equal("s3-primary"))
 
 		// 3) Seeding -> Forming (markers in place).
 		_, err = reconcileOnce(r, out)

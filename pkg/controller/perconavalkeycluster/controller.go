@@ -304,6 +304,15 @@ func (r *Reconciler) reconcileInfra(
 	if err := r.reconcileExpose(ctx, cluster); err != nil {
 		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonExposeError, err)
 	}
+	// Phase 1c: per-pod cluster-announce wiring (expose.perPod). Once the per-pod
+	// external Services exist (phase 1b), discover each pod's external address and
+	// make it available to the node step so spec.announceHost/announcePort gossip
+	// the EXTERNAL address (--cluster-announce-ip/-port) for cluster-mode redirects
+	// (gap §2.12). No-op unless announceWanted. SEAM filled by the expose-announce
+	// leg; the FOUNDATION stub is a no-op so non-per-pod exposes are unaffected.
+	if err := r.reconcileExposeAnnounce(ctx, cluster); err != nil {
+		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonExposeError, err)
+	}
 	// Phase 2: PodDisruptionBudget.
 	if err := r.reconcilePodDisruptionBudget(ctx, cluster); err != nil {
 		return nil, true, ctrl.Result{}, r.fail(ctx, cluster, ReasonPodDisruptionBudgetError, err)

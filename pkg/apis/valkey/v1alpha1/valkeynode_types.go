@@ -122,6 +122,29 @@ type ValkeyNodeSpec struct {
 	// (type valkey.io/acl) holding users.acl. Parent writes; node reads.
 	// +optional
 	ACLSecretName string `json:"aclSecretName,omitempty"`
+
+	// announceHost is the external address this node advertises to cluster-mode
+	// clients via --cluster-announce-ip (06 expose.perPod). When set the engine
+	// gossips this host instead of the in-cluster POD_IP so a client reaching the
+	// per-pod external Service can follow MOVED/ASK redirects to the same external
+	// address. Empty => the downward-API POD_IP (in-cluster default). Parent writes;
+	// node reads.
+	// +optional
+	AnnounceHost string `json:"announceHost,omitempty"`
+	// announcePort is the external client port advertised alongside announceHost
+	// via --cluster-announce-port (the per-pod external Service's published port).
+	// nil => the default client port (6379). Parent writes; node reads.
+	// +optional
+	AnnouncePort *int32 `json:"announcePort,omitempty"`
+
+	// restoreFrom, when set, marks this node as a restore-seed target: the node
+	// controller injects an init container that downloads this shard's RDB from
+	// object storage into /data/dump.rdb BEFORE the engine starts, and the engine
+	// boots with appendonly no so it loads the seeded RDB (CR-8 / 06 §7.4). The
+	// parent (cluster controller) writes it from the restore markers; the node
+	// reads it. nil => a normal (non-restore) node. Parent writes; node reads.
+	// +optional
+	RestoreFrom *RestoreSource `json:"restoreFrom,omitempty"`
 }
 
 // ValkeyNodeStatus is the node-written status (parent reads). 03 §6.

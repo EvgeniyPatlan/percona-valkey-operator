@@ -16,10 +16,15 @@
 release: 0.1.0
 
 # --- engine axis (mirror e2e-tests/release_versions) -------------------------
-# Valkey server lines (one per supported minor; default line first).
-valkeydefaultrecommended: 8.0.2
-valkey80recommended: 8.0.2
-valkey90recommended: 9.0.0
+# Valkey server lines (one per supported minor; default line first). Collapsed to
+# the single published percona/valkey GA tag 9.1.0 — the only tag on the registry
+# (older 8.0/9.0 lines await published images). The legacy valkey80/90recommended
+# keys are retained (still referenced by docs prose) but point at 9.1.0 until the
+# older engine images publish.
+valkeydefaultrecommended: 9.1.0
+valkey91recommended: 9.1.0
+valkey80recommended: 9.1.0
+valkey90recommended: 9.1.0
 # Backup tool + exporter (OQ-1 / OQ-2 — Percona-owned images).
 backuprecommended: 8.0.2
 exporterrecommended: 1.0.0

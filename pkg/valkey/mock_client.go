@@ -122,6 +122,20 @@ func (m *MockClusterClient) EXPECT() *MockClusterClientMockRecorder {
 	return m.recorder
 }
 
+// ACLLoad mocks base method.
+func (m *MockClusterClient) ACLLoad(ctx context.Context) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ACLLoad", ctx)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ACLLoad indicates an expected call of ACLLoad.
+func (mr *MockClusterClientMockRecorder) ACLLoad(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ACLLoad", reflect.TypeOf((*MockClusterClient)(nil).ACLLoad), ctx)
+}
+
 // Close mocks base method.
 func (m *MockClusterClient) Close() error {
 	m.ctrl.T.Helper()

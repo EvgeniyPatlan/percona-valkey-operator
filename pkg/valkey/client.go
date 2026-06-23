@@ -242,7 +242,7 @@ func (rc *realClient) ClusterMigrateSlots(ctx context.Context, ranges []SlotRang
 }
 
 // ClusterGetSlotMigrations issues CLUSTER GETSLOTMIGRATIONS and parses the
-// reply. An entry that cannot be parsed is reported as a non-terminal "running"
+// reply. An entry that cannot be parsed is reported as a non-terminal running
 // migration so the caller errs on the side of waiting (05 §4).
 func (rc *realClient) ClusterGetSlotMigrations(ctx context.Context) ([]SlotMigration, error) {
 	cmd := rc.c.B().Arbitrary("CLUSTER", "GETSLOTMIGRATIONS").Build()
@@ -254,7 +254,7 @@ func (rc *realClient) ClusterGetSlotMigrations(ctx context.Context) ([]SlotMigra
 	for _, entry := range entries {
 		values, parseErr := entry.AsStrMap()
 		if parseErr != nil {
-			migrations = append(migrations, SlotMigration{State: "running"})
+			migrations = append(migrations, SlotMigration{State: MigrationStateRunning})
 			continue
 		}
 		migrations = append(migrations, SlotMigration{
@@ -291,6 +291,18 @@ func (rc *realClient) ClusterFailover(ctx context.Context, mode FailoverMode) er
 	}
 	if err := rc.c.Do(ctx, cmd).Error(); err != nil {
 		return fmt.Errorf("CLUSTER FAILOVER %q: %w", string(mode), err)
+	}
+	return nil
+}
+
+// ACLLoad issues ACL LOAD so the node re-reads its on-disk aclfile and applies
+// the rendered users.acl live (07 §3, ADR-008). The operator calls it after the
+// internal-<cluster>-acl Secret changes so a user/grant/password change does not
+// require a pod roll. Reloading an unchanged file is harmless (it re-applies the
+// same rules), keeping the live-reload idempotent.
+func (rc *realClient) ACLLoad(ctx context.Context) error {
+	if err := rc.c.Do(ctx, rc.c.B().AclLoad().Build()).Error(); err != nil {
+		return fmt.Errorf("ACL LOAD: %w", err)
 	}
 	return nil
 }

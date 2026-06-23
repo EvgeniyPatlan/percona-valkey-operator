@@ -5,8 +5,9 @@
 # a typo in a test-name or version column would otherwise be dropped on the floor by
 # the older bash harnesses and produce a false green. This turns each into a hard fail:
 #   1. every row's test-name is a real directory under e2e-tests/tests/
-#   2. the version column is in the allowed engine set (7.2 | 8.0 | 9.0)
-#   3. any test that REBALANCES or DRAINS slots is 9.0-only
+#   2. the version column is in the allowed engine set (collapsed to 9.1.0 — the only
+#      published percona/valkey GA tag; an unpublished tag is a pull failure)
+#   3. any test that REBALANCES or DRAINS slots runs on a migration-capable engine
 #      (CLUSTER MIGRATESLOTS / CLUSTER GETSLOTMIGRATIONS are Valkey 9.0+; on 7.2/8.0
 #       the subcommand is "unknown subcommand" and the operator blocks scale).
 #
@@ -18,12 +19,19 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tests_dir="$repo_root/e2e-tests/tests"
 
-# Tests whose name implies they rebalance/drain slots → 9.0-only. failover-takeover
-# is a persistence-OFF TAKEOVER and does NOT migrate slots, so it is intentionally
-# NOT in this set (arch §8.5).
+# Tests whose name implies they rebalance/drain slots → migration-capable engine only.
+# failover-takeover is a persistence-OFF TAKEOVER and does NOT migrate slots, so it is
+# intentionally NOT in this set (arch §8.5).
 migration_tests='scaling|slot-migration-interrupt'
-# Allowed engine majors (cluster-mode + ACL floor is 7.x).
-allowed_versions='7\.2|8\.0|9\.0'
+# Allowed engine versions. Collapsed to 9.1.0 — the only published percona/valkey GA
+# tag; the CR templates substitute it into `image: percona/valkey:${VALKEY_VERSION}`,
+# so an unpublished tag (7.2/8.0/9.0) would be an image-pull failure, not a test.
+# Re-add the older lines (7\.2|8\.0|9\.0) here once those engine images are published.
+allowed_versions='9\.1\.0'
+# Migration/scale floor: MIGRATESLOTS/GETSLOTMIGRATIONS are Valkey 9.0+, satisfied by
+# 9.1.0. With the matrix collapsed to a single 9.x tag this equals allowed_versions; it
+# becomes a meaningful sub-filter again when sub-9.0 lines return.
+migration_versions='9\.1\.0'
 
 fail=0
 csvs=()
@@ -51,10 +59,10 @@ for csv in "${csvs[@]}"; do
       echo "MISSING test dir: '$test' ($csv:$lineno) — no e2e-tests/tests/$test" >&2; fail=1
     fi
     if ! [[ "$ver" =~ ^($allowed_versions)$ ]]; then
-      echo "BAD engine version: '$ver' for '$test' ($csv:$lineno) — allowed: 7.2|8.0|9.0" >&2; fail=1
+      echo "BAD engine version: '$ver' for '$test' ($csv:$lineno) — allowed: 9.1.0" >&2; fail=1
     fi
-    if [[ "$test" =~ ^($migration_tests)$ && "$ver" != "9.0" ]]; then
-      echo "ILLEGAL: '$test' must be 9.0-only (MIGRATESLOTS is Valkey 9.0+) ($csv:$lineno)" >&2; fail=1
+    if [[ "$test" =~ ^($migration_tests)$ ]] && ! [[ "$ver" =~ ^($migration_versions)$ ]]; then
+      echo "ILLEGAL: '$test' needs a migration-capable engine (MIGRATESLOTS is Valkey 9.0+) ($csv:$lineno)" >&2; fail=1
     fi
   done < "$csv"
 done

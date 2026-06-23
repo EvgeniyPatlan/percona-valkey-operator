@@ -81,7 +81,10 @@ const (
 // coarse — see restorePhase). annTargetCluster records the provisioned target
 // cluster name for diagnostics (the doc-06 status.targetCluster, which is not in
 // the locked CRD). annRestoredSlots records the validated coverage verdict
-// (doc-06 status.restoredSlots). All are operator-managed annotations, patched via
+// (doc-06 status.restoredSlots). annRestoreStorage bridges the resolved named
+// storage backend onto the target cluster so the cluster controller's restore-target
+// seam can populate the required ValkeyNodeSpec.RestoreFrom.Storage for the seed
+// init container (06 §7.4). All are operator-managed annotations, patched via
 // client.MergeFrom so they never round-trip spec through defaults (M3 finding).
 const (
 	annPhase          = "valkey.percona.com/restore-phase"
@@ -89,6 +92,7 @@ const (
 	annRestoredSlots  = "valkey.percona.com/restore-restored-slots"
 	annAllowPartial   = "valkey.percona.com/allow-partial-restore"
 	annRestoreMarker  = "valkey.percona.com/restored-from"
+	annRestoreStorage = "valkey.percona.com/restore-storage"
 	annClusterTmpl    = "valkey.percona.com/restore-cluster-template"
 	annSeedAppendonly = "valkey.percona.com/restore-seed-appendonly"
 )

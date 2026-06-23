@@ -57,10 +57,10 @@ type Reconciler struct {
 	scheme   *runtime.Scheme
 	recorder events.EventRecorder
 	// storeFactory is the injectable ArtifactStore seam used to read the backup
-	// manifest from object storage (06 §7.5). Tests inject a backup.FakeStore;
-	// production resolves a concrete backend. Defaulted in SetupWithManager.
-	//
-	// TODO(GO-4.13): use storeFactory to ReadManifest from the resolved source.
+	// manifest from object storage (06 §7.5): readManifest (source.go) builds a store
+	// from the resolved source's StorageConfig and ReadManifests the backup-set
+	// descriptor (GO-4.13). Tests inject a backup.FakeStore; production resolves a
+	// concrete backend. Defaulted to backup.NewStore in SetupWithManager.
 	storeFactory StoreFactory
 	// skipNameValidation lets parallel envtest specs register more than one
 	// manager-backed controller of this kind in a single process.

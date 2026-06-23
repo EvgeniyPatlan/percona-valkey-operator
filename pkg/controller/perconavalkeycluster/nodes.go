@@ -406,6 +406,16 @@ func buildValkeyNodeSpec(cluster *valkeyv1alpha1.PerconaValkeyCluster, key nodeK
 			ACLSecretName:                naming.ACLSecretName(cluster.Name),
 		},
 	}
+	// Propagate the per-pod external announce address (expose.perPod) onto the node
+	// so the engine gossips its EXTERNAL addr via --cluster-announce-ip/-port
+	// (announceForNode is the expose-announce seam; empty until that leg lands, so
+	// the node keeps the in-cluster POD_IP announce by default).
+	node.Spec.AnnounceHost, node.Spec.AnnouncePort = announceForNode(cluster, key)
+	// Propagate the restore-seed marker (restored-from) onto the node so the node
+	// controller injects the restore-seed init container that seeds this shard's RDB
+	// before the engine boots (restoreSourceForNode is the restore-target seam; nil
+	// until that leg resolves the storage/backup, so no seed container by default).
+	node.Spec.RestoreFrom = restoreSourceForNode(cluster, key)
 	// Propagate the tlsHash alongside serverConfigHash: reconcileTLS records the
 	// hash on the cluster in-memory; stamping it as the node's naming.AnnTLSHash
 	// annotation makes the resources builder roll the pod on a real cert change

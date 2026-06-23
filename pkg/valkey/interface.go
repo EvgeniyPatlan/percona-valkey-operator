@@ -69,11 +69,28 @@ const (
 	FailoverTakeover FailoverMode = "TAKEOVER"
 )
 
+// CLUSTER GETSLOTMIGRATIONS state tokens (05 §4). A move is in flight until it
+// reaches one of the terminal states; an unparseable/unknown entry is treated as
+// the non-terminal MigrationStateRunning so the caller errs on the side of waiting.
+const (
+	// MigrationStateRunning is the non-terminal "still moving slots" state.
+	MigrationStateRunning = "running"
+	// MigrationStateSuccess is a terminal "move completed" state.
+	MigrationStateSuccess = "success"
+	// MigrationStateFailed is a terminal "move failed" state.
+	MigrationStateFailed = "failed"
+	// MigrationStateCanceled / MigrationStateCancelled are terminal "move
+	// aborted" states (the engine has used both spellings across versions).
+	MigrationStateCanceled  = "canceled"
+	MigrationStateCancelled = "cancelled"
+)
+
 // SlotMigration is one entry of CLUSTER GETSLOTMIGRATIONS, the pre-check the
 // controller runs before issuing a rebalance/drain move (05 §4).
 type SlotMigration struct {
-	// State is the migration state token (e.g. "running", "success",
-	// "failed"); a non-terminal state means a move is still in flight.
+	// State is the migration state token (e.g. MigrationStateRunning,
+	// MigrationStateSuccess, MigrationStateFailed); a non-terminal state means a
+	// move is still in flight.
 	State string
 	// Slots is the migrating slot range, when reported.
 	Slots SlotRange
@@ -85,7 +102,7 @@ type SlotMigration struct {
 // no longer blocks a fresh move.
 func (m SlotMigration) IsTerminal() bool {
 	switch m.State {
-	case "success", "failed", "canceled", "cancelled":
+	case MigrationStateSuccess, MigrationStateFailed, MigrationStateCanceled, MigrationStateCancelled:
 		return true
 	default:
 		return false
@@ -136,6 +153,13 @@ type ClusterClient interface {
 	ClusterForget(ctx context.Context, nodeID string) error
 	// ClusterFailover issues CLUSTER FAILOVER in the given mode (05 §6-§7).
 	ClusterFailover(ctx context.Context, mode FailoverMode) error
+
+	// ACLLoad reloads the node's ACL rules from its on-disk aclfile (ACL LOAD).
+	// The operator issues it after re-rendering the mounted users.acl Secret so a
+	// user/grant/password change is applied live, without rolling the pod (07 §3,
+	// ADR-008: ACL/auth changes are applied in place). It is a no-op-safe reload —
+	// re-loading an unchanged file simply re-applies the same rules.
+	ACLLoad(ctx context.Context) error
 }
 
 // ClientFactory is the seam the ValkeyNode controller holds so envtest injects a

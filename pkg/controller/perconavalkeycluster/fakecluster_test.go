@@ -270,9 +270,27 @@ func (n *fakeNode) InfoReplication(ctx context.Context) (map[string]string, erro
 	raw, _ := n.Info(ctx, "replication")
 	return valkey.ParseInfoReplication(raw), nil
 }
-func (n *fakeNode) ConfigSet(context.Context, string, string) error { return nil }
-func (n *fakeNode) Ping(context.Context) error                      { return nil }
-func (n *fakeNode) Close() error                                    { return nil }
+
+// ConfigSet records the CONFIG SET so a test can assert the live auth reload
+// issued CONFIG SET masterauth on a real change (and not on a no-op). The key is
+// recorded as the arg so callsOfType("CONFIGSET") can be filtered by key downstream.
+func (n *fakeNode) ConfigSet(_ context.Context, key, value string) error {
+	n.fc.mu.Lock()
+	defer n.fc.mu.Unlock()
+	n.record("CONFIGSET", key+"="+value)
+	return nil
+}
+func (n *fakeNode) Ping(context.Context) error { return nil }
+func (n *fakeNode) Close() error               { return nil }
+
+// ACLLoad records the ACL LOAD so a test can assert the in-place auth reload
+// reloaded the aclfile live on a real ACL change (and never on a no-op reconcile).
+func (n *fakeNode) ACLLoad(context.Context) error {
+	n.fc.mu.Lock()
+	defer n.fc.mu.Unlock()
+	n.record("ACLLOAD", "")
+	return nil
+}
 
 func (n *fakeNode) ClusterSetConfigEpoch(_ context.Context, _ int64) error {
 	n.record("SETEPOCH", "")

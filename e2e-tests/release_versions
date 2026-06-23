@@ -24,13 +24,15 @@
 IMAGE_OPERATOR=percona/valkey-operator:0.1.0
 
 # --- Valkey server/engine images (one IMAGE_VALKEY<major><minor> per supported line) ---
-# percona/percona-valkey carries the engine + the in-pod sidecars (valkey-backup,
-# healthcheck, peer-list) built from Dockerfile.sidecar.
-IMAGE_VALKEY90=percona/percona-valkey:9.0.0
-IMAGE_VALKEY80=percona/percona-valkey:8.0.2
+# percona/valkey carries the engine + the in-pod sidecars (valkey-backup,
+# healthcheck, peer-list) built from Dockerfile.sidecar. The repo is percona/valkey
+# (matches pkg/version defaultServerImageRepo + deploy/cr*.yaml + chart values), NOT
+# percona/percona-valkey. Collapsed to the single published GA tag 9.1.0; add the
+# older IMAGE_VALKEY90/80 lines back once those engine images are published.
+IMAGE_VALKEY91=percona/valkey:9.1.0
 
 # Default engine line pinned into deploy/cr*.yaml `spec.image`.
-IMAGE_VALKEY_DEFAULT=percona/percona-valkey:8.0.2
+IMAGE_VALKEY_DEFAULT=percona/valkey:9.1.0
 
 # --- Backup tool image (OQ-1: standalone image; may fold into server image later) ---
 IMAGE_BACKUP=percona/valkey-backup:8.0.2

@@ -19,6 +19,9 @@ package perconavalkeycluster
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -26,7 +29,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	valkeyv1alpha1 "valkey.percona.com/percona-valkey-operator/pkg/apis/valkey/v1alpha1"
 	"valkey.percona.com/percona-valkey-operator/pkg/k8s"
@@ -54,6 +59,20 @@ const systemUserPrefix = "_"
 // in the ACL leg (not status.go) to keep the M5 seams disjoint; the create-time
 // event EventUsersACLCreated lives in status.go (M3 vocabulary).
 const EventUsersACLUpdated = "UsersAclUpdated"
+
+// EventAuthReloaded is emitted when an in-place auth/ACL reload is applied to a
+// running cluster (ACL LOAD + CONFIG SET masterauth on each reachable node),
+// avoiding a pod roll for a user/password/grant change (07 §3, ADR-008).
+const EventAuthReloaded = "AuthReloaded"
+
+// annAuthSignature records the SHA-256 of the rendered auth material (the
+// users.acl content + the default-user requirepass) that was LAST applied live to
+// the running cluster. The in-place reload fires only when the freshly-rendered
+// signature differs from this stamped value, so an unchanged reconcile is a
+// genuine no-op (idempotent live reload). It is a controller-internal hint (not a
+// pod-template annotation), so it lives here rather than in pkg/naming, mirroring
+// the gateAnnotation pattern.
+const annAuthSignature = "valkey.percona.com/auth-signature"
 
 // reconcileUsersACL renders the internal-<cluster>-acl Secret (type
 // valkey.io/acl) from the canonical _operator/_exporter/_backup system users
@@ -108,6 +127,174 @@ func (r *Reconciler) reconcileUsersACL(ctx context.Context, cluster *valkeyv1alp
 	case controllerutil.OperationResultUpdated:
 		r.recorder.Eventf(cluster, secret, eventNormal, EventUsersACLUpdated, "UpdateUsersAcl", "Updated ACL Secret %s", secret.Name)
 	}
+
+	// Apply the rendered ACL/requirepass/masterauth live to a RUNNING cluster so a
+	// user/password/grant change does not require a pod roll (07 §3, ADR-008). The
+	// aclfile + requirepass + masterauth are deliberately excluded from the
+	// config-roll hash (see ServerConfigRollHash), so without this in-place reload a
+	// pure auth change would never reach the engine until the next unrelated roll.
+	if err := r.reconcileAuthReload(ctx, cluster, content, defaultUserPassword); err != nil {
+		return err
+	}
+	return nil
+}
+
+// reconcileAuthReload applies a changed ACL/requirepass/masterauth to a running
+// cluster IN PLACE — issuing ACL LOAD (reload the just-rewritten aclfile) and
+// CONFIG SET masterauth <pw> on each reachable node — instead of relying on a pod
+// roll (07 §3, ADR-008). requirepass/masterauth and the aclfile are excluded from
+// the config-roll hash precisely so the operator can rotate them live, so this is
+// the seam that makes a pure auth change take effect without churn.
+//
+// It is idempotent and safe:
+//
+//   - It fires ONLY when the rendered auth signature (sha256 of the users.acl
+//     content + the default-user password) differs from the value last applied,
+//     stamped on annAuthSignature. An unchanged reconcile is a no-op (no commands).
+//   - The FIRST time a signature is observed (annotation absent) it stamps the
+//     signature WITHOUT issuing live commands: a freshly-created cluster's pods boot
+//     with the correct mounted aclfile/config, so there is nothing to reload — only
+//     a SUBSEQUENT change needs the live push.
+//   - Nodes that are not reachable/ready (no podIP, dial/scrape failure) are
+//     skipped, never failing the reconcile — the next pass retries the still-pending
+//     signature for the nodes that have since come up.
+//
+// The signature is persisted via a metadata-only MergeFrom PATCH (never a full
+// Update) so the omitempty-stripped spec is left byte-for-byte untouched (the
+// charter's omitempty+defaults round-trip footgun, mirrored from ensureFinalizers).
+func (r *Reconciler) reconcileAuthReload(
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster, aclContent, requirepass string,
+) error {
+	// No live client wired (unit-test path that exercises only the render): skip the
+	// live reload entirely. The signature stamping below is also skipped so a later
+	// integration pass with a real factory performs the first-observation stamp.
+	if r.clientFactory == nil {
+		return nil
+	}
+
+	signature := authSignature(aclContent, requirepass)
+	last := cluster.Annotations[annAuthSignature]
+	if last == signature {
+		return nil // auth unchanged — nothing to reload.
+	}
+
+	// First observation: record the signature without a live push (pods already
+	// booted with the correct material). Only a later change triggers a reload.
+	firstObservation := last == ""
+	if !firstObservation {
+		switch err := r.liveReloadAuth(ctx, cluster, requirepass); {
+		case errors.Is(err, errAuthReloadPending):
+			// No node reachable yet — do NOT stamp; retry next pass. Not an error.
+			return nil
+		case err != nil:
+			return err
+		}
+	}
+	return r.stampAuthSignature(ctx, cluster, signature)
+}
+
+// liveReloadAuth issues ACL LOAD + CONFIG SET masterauth (and requirepass, kept in
+// lockstep) against every reachable node of the cluster, skipping nodes that are
+// not ready or unreachable. A per-node dial/command failure is logged and skipped
+// rather than failing the reconcile, so one lagging pod never blocks the rest; the
+// next reconcile retries because the signature stays unstamped until at least one
+// node succeeds. Returns an error only when NO node could be reloaded AND nodes
+// were expected (so a genuinely-down cluster is surfaced, not silently ignored).
+func (r *Reconciler) liveReloadAuth(
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster, requirepass string,
+) error {
+	log := logf.FromContext(ctx)
+
+	nodes, err := r.listClusterNodes(ctx, cluster)
+	if err != nil {
+		return fmt.Errorf("auth reload: list nodes: %w", err)
+	}
+
+	reachable, reloaded := 0, 0
+	for i := range nodes.Items {
+		node := &nodes.Items[i]
+		if node.Status.PodIP == "" {
+			continue // not ready yet; the next pass reloads it.
+		}
+		reachable++
+		_, c, derr := r.clientFactory.ForNode(ctx, node)
+		if derr != nil {
+			log.V(1).Info("auth reload: dial failed, skipping node", "node", node.Name, "err", derr.Error())
+			continue
+		}
+		if rerr := reloadNodeAuth(ctx, c, requirepass); rerr != nil {
+			log.V(1).Info("auth reload: command failed, skipping node", "node", node.Name, "err", rerr.Error())
+			_ = c.Close()
+			continue
+		}
+		_ = c.Close()
+		reloaded++
+	}
+
+	if reloaded == 0 {
+		if reachable == 0 {
+			// No node is reachable yet (cluster still coming up). Not an error: leave
+			// the signature unstamped so the next pass retries when pods are ready.
+			return errAuthReloadPending
+		}
+		return fmt.Errorf("auth reload: no reachable node accepted the live ACL/auth reload")
+	}
+	r.recorder.Eventf(cluster, nil, eventNormal, EventAuthReloaded, "AuthReload",
+		"Applied auth/ACL change live to %d/%d node(s) (ACL LOAD + CONFIG SET masterauth)", reloaded, reachable)
+	return nil
+}
+
+// errAuthReloadPending is the sentinel reconcileAuthReload uses to mean "no node
+// is reachable yet": the signature is deliberately NOT stamped so the next pass
+// retries the live reload once pods are up, without failing the reconcile.
+var errAuthReloadPending = fmt.Errorf("auth reload pending: no reachable node")
+
+// reloadNodeAuth applies the live auth change to ONE node: CONFIG SET masterauth
+// (so a replica can still authenticate to its primary after the rotation) and
+// ACL LOAD (re-read the just-rewritten aclfile, applying user/grant/password
+// changes for every ACL user including the default user). masterauth is set
+// BEFORE ACL LOAD so the replica link never observes a window where the default
+// user requires a password the replica has not yet been told to present. An empty
+// requirepass (auth disabled) clears masterauth to "" so the directive matches the
+// nopass default user. Kept as a package function (no receiver) so it is unit-
+// testable against a mock ClusterClient.
+func reloadNodeAuth(ctx context.Context, c valkey.ClusterClient, requirepass string) error {
+	if err := c.ConfigSet(ctx, "masterauth", requirepass); err != nil {
+		return fmt.Errorf("CONFIG SET masterauth: %w", err)
+	}
+	if err := c.ACLLoad(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+// authSignature is the SHA-256 (hex) of the rendered auth material — the users.acl
+// content plus the default-user requirepass — separated by a NUL so the two fields
+// can never collide. It changes only on a real auth change (the aclfile bytes or
+// the default password), so it is the trigger the in-place reload keys off.
+func authSignature(aclContent, requirepass string) string {
+	sum := sha256.Sum256([]byte(aclContent + "\x00" + requirepass))
+	return hex.EncodeToString(sum[:])
+}
+
+// stampAuthSignature persists the last-applied auth signature onto the cluster via
+// a metadata-only MergeFrom PATCH (never a full Update — that would round-trip the
+// omitempty-stripped spec and re-default it; see ensureFinalizers). The in-memory
+// object is updated too so the rest of the pass sees the stamped value.
+func (r *Reconciler) stampAuthSignature(
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster, signature string,
+) error {
+	base := cluster.DeepCopy()
+	if cluster.Annotations == nil {
+		cluster.Annotations = map[string]string{}
+	}
+	cluster.Annotations[annAuthSignature] = signature
+
+	patchTarget := cluster.DeepCopy()
+	if err := r.Patch(ctx, patchTarget, client.MergeFrom(base)); err != nil {
+		return fmt.Errorf("stamp auth signature: %w", err)
+	}
+	cluster.ResourceVersion = patchTarget.ResourceVersion
 	return nil
 }
 

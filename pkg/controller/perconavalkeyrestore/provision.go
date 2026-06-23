@@ -90,7 +90,7 @@ func clusterTemplate(rst *valkeyv1alpha1.PerconaValkeyRestore) (valkeyv1alpha1.P
 // the very first cluster reconcile injects the seed init container before the engine
 // boots (06 §7.4 — the RDB must be present before the Valkey process starts).
 func (r *Reconciler) provisionTargetCluster(
-	ctx context.Context, rst *valkeyv1alpha1.PerconaValkeyRestore, man backup.Manifest,
+	ctx context.Context, rst *valkeyv1alpha1.PerconaValkeyRestore, src resolvedSource, man backup.Manifest,
 ) (*valkeyv1alpha1.PerconaValkeyCluster, error) {
 	name := targetClusterName(rst)
 	key := types.NamespacedName{Name: name, Namespace: rst.Namespace}
@@ -101,12 +101,12 @@ func (r *Reconciler) provisionTargetCluster(
 	case err == nil:
 		// Adopt: stamp the restore markers onto the existing cluster (InPlace, or a
 		// NewCluster re-reconcile after the create already landed).
-		return existing, r.stampRestoreMarkers(ctx, existing, rst, man)
+		return existing, r.stampRestoreMarkers(ctx, existing, rst, src)
 	case apierrors.IsNotFound(err):
 		if rst.Spec.Strategy == valkeyv1alpha1.RestoreStrategyInPlace {
 			return nil, fmt.Errorf("InPlace restore target cluster %s does not exist", key)
 		}
-		return r.createTargetCluster(ctx, rst, man)
+		return r.createTargetCluster(ctx, rst, src, man)
 	default:
 		return nil, fmt.Errorf("get target cluster %s: %w", key, err)
 	}
@@ -116,7 +116,7 @@ func (r *Reconciler) provisionTargetCluster(
 // cluster-template annotation, sizing shards to the manifest, with the restore
 // markers stamped at creation time.
 func (r *Reconciler) createTargetCluster(
-	ctx context.Context, rst *valkeyv1alpha1.PerconaValkeyRestore, man backup.Manifest,
+	ctx context.Context, rst *valkeyv1alpha1.PerconaValkeyRestore, src resolvedSource, man backup.Manifest,
 ) (*valkeyv1alpha1.PerconaValkeyCluster, error) {
 	spec, _ := clusterTemplate(rst)
 	// Shards always match the manifest topology (06 §7.1 — must equal or be
@@ -127,7 +127,7 @@ func (r *Reconciler) createTargetCluster(
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        targetClusterName(rst),
 			Namespace:   rst.Namespace,
-			Annotations: restoreMarkerAnnotations(rst),
+			Annotations: restoreMarkerAnnotations(rst, src),
 		},
 		Spec: spec,
 	}
@@ -138,7 +138,7 @@ func (r *Reconciler) createTargetCluster(
 			if gerr := r.Get(ctx, client.ObjectKeyFromObject(cluster), fresh); gerr != nil {
 				return nil, fmt.Errorf("re-fetch raced target cluster: %w", gerr)
 			}
-			return fresh, r.stampRestoreMarkers(ctx, fresh, rst, man)
+			return fresh, r.stampRestoreMarkers(ctx, fresh, rst, src)
 		}
 		return nil, fmt.Errorf("create target cluster %s: %w", client.ObjectKeyFromObject(cluster), err)
 	}
@@ -152,9 +152,9 @@ func (r *Reconciler) createTargetCluster(
 // the markers already match.
 func (r *Reconciler) stampRestoreMarkers(
 	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster,
-	rst *valkeyv1alpha1.PerconaValkeyRestore, _ backup.Manifest,
+	rst *valkeyv1alpha1.PerconaValkeyRestore, src resolvedSource,
 ) error {
-	want := restoreMarkerAnnotations(rst)
+	want := restoreMarkerAnnotations(rst, src)
 	if annotationsContain(cluster.Annotations, want) {
 		return nil
 	}
@@ -173,14 +173,23 @@ func (r *Reconciler) stampRestoreMarkers(
 
 // restoreMarkerAnnotations is the marker set the restore stamps on its target
 // cluster: the restored-from marker (so the cluster controller gates engine rolls
-// and the node controller injects the seed init container — 06 §7.4) and the
+// and the node controller injects the seed init container — 06 §7.4), the
 // appendonly-no seed override (so the engine loads dump.rdb, not an empty AOF —
-// 06 §7.4, R3). The marker value records the source backup identity for provenance.
-func restoreMarkerAnnotations(rst *valkeyv1alpha1.PerconaValkeyRestore) map[string]string {
-	return map[string]string{
+// 06 §7.4, R3), and the resolved named storage backend (so the cluster controller's
+// restore-target seam can populate the required ValkeyNodeSpec.RestoreFrom.Storage
+// the seed init container downloads from). The restored-from value records the source
+// backup identity for provenance; the storage marker is omitted when no named storage
+// resolved (an inline backupSource with no storageName) so the seam falls back to the
+// cluster's own resolved backup storage.
+func restoreMarkerAnnotations(rst *valkeyv1alpha1.PerconaValkeyRestore, src resolvedSource) map[string]string {
+	markers := map[string]string{
 		annRestoreMarker:  restoreMarkerValue(rst),
 		annSeedAppendonly: seedAppendonlyNo,
 	}
+	if src.StorageName != "" {
+		markers[annRestoreStorage] = src.StorageName
+	}
+	return markers
 }
 
 // restoreMarkerValue is the provenance string stamped into the restored-from marker:
