@@ -204,7 +204,7 @@ module path intentionally equals the API group (`valkey.percona.com`) for symmet
 the API; it is **not** a `github.com/...` path. The PROJECT file and all
 `controller-gen` invocations resolve types under this module root. Go toolchain is
 **1.26** (pinned in `.go-version`; `go.mod` declares `go 1.26.0`), matching the operator
-toolchain in [CLAUDE.md](../../../CLAUDE.md) and the upstream `.go-version` (`1.26.2`).
+toolchain and the upstream `.go-version` (`1.26.2`).
 
 | Package | Responsibility | Imported by | May import |
 |---------|----------------|-------------|------------|
@@ -261,7 +261,7 @@ the kustomize bases under `config/`.
 `deploy/`), `setup-envtest` (KUBEBUILDER_ASSETS for unit tests), `mockgen` (interface
 mocks), `golangci-lint` (lint), `operator-sdk` + `opm` (OLM bundle/catalog). This
 "first invocation downloads pinned tools into `bin/`" behaviour matches both the
-upstream and the Percona SDK Makefiles described in [CLAUDE.md](../../../CLAUDE.md).
+upstream and the Percona Operator SDK Makefiles.
 
 **Regeneration workflow after any `*_types.go` change:**
 
@@ -538,4 +538,4 @@ engine/helpers and ship in the DB image, completely decoupled from the controlle
 - [Upgrades & Version Management](09-upgrades-versioning.md) — `crVersion` gating, `upgradeOptions`, version service.
 - [Distribution & Release](10-distribution-release.md) — `make release`/`after-release`, the `VERSION` footgun, cross-repo sync, OLM/Helm packaging.
 - [Testing & Quality Assurance](11-testing-qa.md) — envtest unit tests, kuttl e2e, `run-*.csv` matrix, `check-generate` gate.
-- [CLAUDE.md](../../../CLAUDE.md) — workspace-wide conventions this layout inherits from the trio.
+- The Percona Operator SDK conventions (the PXC/PSMDB/PS operators) this layout mirrors.

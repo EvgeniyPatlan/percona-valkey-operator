@@ -1,6 +1,6 @@
 <!--
 Thanks for contributing to the Percona Valkey Operator. Fill in every section.
-Keep the PR focused: one logical change per PR (see CLAUDE.md per-repo conventions).
+Keep the PR focused: one logical change per PR.
 -->
 
 ## What
@@ -47,7 +47,7 @@ after it**. This proves the test actually covers the change and is not a tautolo
 - [ ] Metadata persisted via `client.MergeFrom` PATCH, never a full `Update`
       (the omitempty + defaults round-trip footgun)
 - [ ] Cross-repo version axes updated if a release-relevant constant changed
-      (operator vs engine pins; see CLAUDE.md "Cross-repo version bumps")
+      (operator vs engine pins; see the release docs under docs/)
 - [ ] No secrets/credentials committed; user input validated at boundaries
 
 ## Test plan

@@ -183,7 +183,7 @@ The smart update blocks while a backup Job is running (mirroring the trio's `isB
 
 ### Consequences
 
-- **Gained:** declarative, version-service-driven engine upgrades; backward-compat behaviour branching; alignment with the Percona release machinery (the eight hand-edited version sync points documented in the workspace `CLAUDE.md`).
+- **Gained:** declarative, version-service-driven engine upgrades; backward-compat behaviour branching; alignment with the Percona release machinery (the eight hand-edited version sync points across the operator, charts, and docs repos).
 - **Paid:** the well-known footguns — `version.txt`/`crVersion` must stay in sync (CI gate recommended), and an async version-service cron mutating the CR must coordinate with reconcile via fresh status reads to avoid races.
 - **Constrains:** [ADR-007](#adr-007--operator-driven-failover-no-sentinel) (rollout ordering) and the entire release flow ([ADR-010](#adr-010--distribution-via-helm--olm)). Elaborated in [Versioning & Upgrades](09-upgrades-versioning.md).
 
