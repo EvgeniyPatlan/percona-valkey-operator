@@ -26,10 +26,11 @@ jobs:
         run: make test
       - name: coverage gate (>=80% on pkg/...)
         run: |
-          # Coverage is measured on pkg/... only (excludes cmd/, generated, e2e)
-          # per docs/architecture/11-testing-qa.md §1. The tiny pkg/version,
-          # pkg/naming, pkg/platform logic is fully tested so 80% is reachable.
-          go test -coverprofile=cover.pkg.out ./pkg/... >/dev/null
-          total=$(go tool cover -func=cover.pkg.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          # Reuse the coverage profile the `make test` step produced above. That run sets
+          # KUBEBUILDER_ASSETS (envtest) and scopes to the test-bearing pkg/... packages
+          # (coverage policy, docs/architecture/11-testing-qa.md §1). Re-running
+          # `go test ./pkg/...` in this step would start with NO envtest assets, so the
+          # controller suites skip and the total is under-reported.
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {gsub("%","",$3); print $3}')
           echo "pkg coverage: ${total}%"
           awk -v t="${total}" 'BEGIN { if (t+0 < 80.0) { print "::error::pkg coverage " t "% < 80%"; exit 1 } }'

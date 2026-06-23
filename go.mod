@@ -1,6 +1,6 @@
 module valkey.percona.com/percona-valkey-operator
 
-go 1.26.0
+go 1.26.4
 
 require (
 	cloud.google.com/go/storage v1.62.3
