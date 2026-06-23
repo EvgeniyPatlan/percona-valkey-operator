@@ -1,15 +1,26 @@
 package version
 
-import "testing"
+import (
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+)
 
 func TestVersion(t *testing.T) {
-	if got := Version(); got != "0.1.0" {
-		t.Fatalf("Version() = %q, want %q (from version.txt)", got, "0.1.0")
+	// Bump-proof: assert Version() matches the embedded version.txt rather than a
+	// hardcoded literal, so a release bump (e.g. 0.1.0 -> 0.1.1) does not break it.
+	raw, err := os.ReadFile("version.txt")
+	if err != nil {
+		t.Fatalf("read version.txt: %v", err)
+	}
+	if got, want := Version(), strings.TrimSpace(string(raw)); got != want {
+		t.Fatalf("Version() = %q, want %q (from version.txt)", got, want)
 	}
 }
 
 func TestCompareVersion(t *testing.T) {
-	// Version() is 0.1.0 (major.minor = 0.1).
+	// Version() is 0.1.x (major.minor = 0.1); patch is immaterial to CompareVersion.
 	tests := []struct {
 		name   string
 		target string
@@ -56,15 +67,21 @@ func TestMajorMinor(t *testing.T) {
 }
 
 func TestMajorMinorPatchAccessors(t *testing.T) {
-	// Version() is 0.1.0 (the embedded version.txt seed).
-	if got := Major(); got != 0 {
-		t.Errorf("Major() = %d, want 0", got)
+	// Bump-proof: derive the expected major/minor/patch from Version() itself, so a
+	// release bump does not break this — it verifies the accessors split correctly.
+	parts := strings.SplitN(Version(), ".", 3)
+	if len(parts) != 3 {
+		t.Fatalf("Version() = %q is not major.minor.patch", Version())
 	}
-	if got := Minor(); got != 1 {
-		t.Errorf("Minor() = %d, want 1", got)
+	atoi := func(s string) int { n, _ := strconv.Atoi(s); return n }
+	if got, want := Major(), atoi(parts[0]); got != want {
+		t.Errorf("Major() = %d, want %d", got, want)
 	}
-	if got := Patch(); got != 0 {
-		t.Errorf("Patch() = %d, want 0", got)
+	if got, want := Minor(), atoi(parts[1]); got != want {
+		t.Errorf("Minor() = %d, want %d", got, want)
+	}
+	if got, want := Patch(), atoi(parts[2]); got != want {
+		t.Errorf("Patch() = %d, want %d", got, want)
 	}
 }
 
