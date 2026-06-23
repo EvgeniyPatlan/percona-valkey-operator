@@ -33,14 +33,17 @@ func TestRenderServerConfigRequirepass(t *testing.T) {
 		wantAbsent  []string
 	}{
 		{
-			name:        "requirepass rendered when set",
-			in:          ConfigInput{ACL: true, Requirepass: "s3cr3t"},
-			wantContain: []string{"requirepass s3cr3t"},
+			name: "requirepass rendered when set, with companion masterauth",
+			in:   ConfigInput{ACL: true, Requirepass: "s3cr3t"},
+			// masterauth MUST mirror requirepass: otherwise a replica cannot
+			// authenticate to its passworded primary and master_link_status stays
+			// down, so the cluster never reaches Ready.
+			wantContain: []string{"requirepass s3cr3t", "masterauth s3cr3t"},
 		},
 		{
-			name:       "no requirepass line when empty (auth disabled)",
+			name:       "no requirepass/masterauth line when empty (auth disabled)",
 			in:         ConfigInput{ACL: true},
-			wantAbsent: []string{"requirepass"},
+			wantAbsent: []string{"requirepass", "masterauth"},
 		},
 		{
 			name: "operator requirepass wins over user config",

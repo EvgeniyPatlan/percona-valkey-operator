@@ -145,8 +145,18 @@ func baseConfig(in ConfigInput) map[string]string {
 	// default user is otherwise governed by the mounted aclfile; requirepass is the
 	// chart's primary auth knob and is the canonical way to password the default
 	// user (07 §3 / gap §2.3). Empty => no line (auth disabled / password unresolved).
+	//
+	// masterauth is the COMPANION directive: when the default user requires a
+	// password, a replica's link to its primary authenticates as the default user
+	// (no masteruser is set, so the replication client uses default), so without
+	// masterauth the replica gets NOAUTH and master_link_status stays `down` —
+	// every shard then fails the operator's replica-link health check and the
+	// cluster never reaches Ready. So masterauth MUST mirror requirepass. Like
+	// requirepass it is operator-managed and EXCLUDED from the config-roll hash
+	// (rotated live alongside requirepass; see ServerConfigRollHash).
 	if in.Requirepass != "" {
 		cfg["requirepass"] = in.Requirepass
+		cfg["masterauth"] = in.Requirepass
 	}
 	if in.TLS {
 		cfg["tls-port"] = clientPortStr
@@ -259,6 +269,9 @@ func ServerConfigRollHash(in ConfigInput) string {
 		delete(merged, k)
 	}
 	delete(merged, "requirepass")
+	// masterauth mirrors requirepass and is rotated live alongside it (07 §3,
+	// ADR-008); excluded from the roll hash so a password rotation never rolls pods.
+	delete(merged, "masterauth")
 	body := renderConfigMap(merged) + renderDisableCommands(in.DisableCommands)
 	sum := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(sum[:])

@@ -78,7 +78,18 @@ func (r *Reconciler) reconcileUsersACL(ctx context.Context, cluster *valkeyv1alp
 		return err
 	}
 
-	content := valkey.RenderUsersACL(cluster.Spec.Exporter.Enabled, passwords, userLines)
+	// Resolve the default-user password (same value rendered as `requirepass` in
+	// valkey.conf). The aclfile MUST carry a matching `default` line: once an
+	// aclfile is loaded the engine ignores requirepass for the default user, so
+	// without this the default user stays nopass and auth is silently not enforced
+	// (07 §3 / gap §2.3). Empty => the renderer emits `user default on nopass ...`
+	// so the file agrees with the absent requirepass line.
+	defaultUserPassword, err := r.resolveRequirepass(ctx, cluster)
+	if err != nil {
+		return err
+	}
+
+	content := valkey.RenderUsersACL(cluster.Spec.Exporter.Enabled, passwords, userLines, defaultUserPassword)
 
 	secret := &corev1.Secret{}
 	secret.Name, secret.Namespace = naming.ACLSecretName(cluster.Name), cluster.Namespace

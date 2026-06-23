@@ -30,6 +30,21 @@ import (
 // the internal-<cluster>-acl Secret (type valkey.io/acl).
 const ACLFileKey = "users.acl"
 
+// SystemUserDefault is the built-in default user. Valkey's ACL subsystem OWNS the
+// default user: once an aclfile is loaded, the default user's state is whatever
+// the aclfile says (or its built-in startup state if the file omits it), and a
+// `requirepass` directive in valkey.conf is IGNORED for it. So when the operator
+// passwords the default user via requirepass, the users.acl MUST also carry a
+// matching `default` line or auth is silently NOT enforced (the default user
+// stays `nopass`). See defaultUserLine. 07 §3 / gap §2.3.
+const SystemUserDefault = "default"
+
+// defaultUserRules is the default user's grant: full access (~* &* +@all),
+// matching the engine's built-in default. The only thing the operator gates is
+// the password (on #<hash> vs on nopass); access is never narrowed so existing
+// clients keep working once they authenticate.
+const defaultUserRules = "~* &* +@all"
+
 // SystemUser is one canonical least-privilege system user. The Rules are the
 // VERBATIM grant string from 07 §4.3 / 04 §3 (everything after the hashed
 // password slot). The renderer inserts `on #<sha256-of-password>` between the
@@ -131,19 +146,32 @@ func renderSystemUserLine(u SystemUser, password string) string {
 	return fmt.Sprintf("user %s on %s %s", u.Name, HashACLPassword(password), u.Rules)
 }
 
-// RenderUsersACL renders the deterministic users.acl file content: the canonical
-// system users (07 §4.3) in fixed order, each with its password sourced from
-// passwords[name], followed by the user-defined lines (already-rendered by
-// BuildUserACL, sorted here) passed in userLines. The output is byte-stable
-// (sorted user lines, fixed system-user order) so its hash triggers a roll only
-// on a real ACL change (04 §3). System users render LAST in the file is NOT the
-// order: 07 §4.2 fixes user-defined lines first, then system users; this helper
-// emits system users first because the engine resolves the last matching `user`
-// line and the system users must never be shadowed by a same-named user-defined
-// line — but user-defined names cannot start with `_` (CEL), so there is no
-// collision and either order is byte-stable. Kept as-is from M3 for stability.
-func RenderUsersACL(exporterEnabled bool, passwords map[string]string, userLines []string) string {
+// RenderUsersACL renders the deterministic users.acl file content: the built-in
+// `default` user line first (defaultUserLine), then the canonical system users
+// (07 §4.3) in fixed order, each with its password sourced from passwords[name],
+// followed by the user-defined lines (already-rendered by BuildUserACL, sorted
+// here) passed in userLines. The output is byte-stable (sorted user lines, fixed
+// system-user order) so its hash triggers a roll only on a real ACL change (04
+// §3). System users render LAST in the file is NOT the order: 07 §4.2 fixes
+// user-defined lines first, then system users; this helper emits system users
+// first because the engine resolves the last matching `user` line and the system
+// users must never be shadowed by a same-named user-defined line — but
+// user-defined names cannot start with `_` (CEL), so there is no collision and
+// either order is byte-stable. Kept as-is from M3 for stability.
+//
+// defaultUserPassword is the cleartext default-user password the controller
+// resolved from spec.auth (same value rendered as `requirepass` in valkey.conf).
+// It is REQUIRED that the aclfile carry a matching `default` line: once an aclfile
+// is loaded the engine ignores `requirepass` for the default user, so without this
+// line a passworded cluster would silently leave the default user `nopass` (auth
+// not enforced — security defect surfaced on percona/valkey:9.1.0 via the
+// cross-shard MOVED re-AUTH path). Empty => `user default on nopass ...` (auth
+// disabled / password unresolved), making the file agree with the absent
+// requirepass line.
+func RenderUsersACL(exporterEnabled bool, passwords map[string]string, userLines []string, defaultUserPassword string) string {
 	var b strings.Builder
+	b.WriteString(defaultUserLine(defaultUserPassword))
+	b.WriteByte('\n')
 	for _, u := range SystemUsers(exporterEnabled) {
 		b.WriteString(renderSystemUserLine(u, passwords[u.Name]))
 		b.WriteByte('\n')
@@ -158,6 +186,19 @@ func RenderUsersACL(exporterEnabled bool, passwords map[string]string, userLines
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// defaultUserLine renders the built-in `default` user line so the aclfile and the
+// valkey.conf `requirepass` directive AGREE on the default user's auth state.
+// Non-empty password => `user default on #<sha256-hex> ~* &* +@all` (password
+// required). Empty password => `user default on nopass ~* &* +@all` (auth
+// disabled). Access is always full (~* &* +@all), matching the engine default;
+// only the password slot is gated. Cleartext is never written — only the hash.
+func defaultUserLine(password string) string {
+	if password == "" {
+		return fmt.Sprintf("user %s on nopass %s", SystemUserDefault, defaultUserRules)
+	}
+	return fmt.Sprintf("user %s on %s %s", SystemUserDefault, HashACLPassword(password), defaultUserRules)
 }
 
 // BuildUserACL renders exactly one deterministic `user <name> ...` line from a

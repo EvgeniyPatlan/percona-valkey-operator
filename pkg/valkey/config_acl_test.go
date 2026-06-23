@@ -130,15 +130,23 @@ func TestRenderUsersACLDeterministicAndHashed(t *testing.T) {
 		SystemUserBackup:   "bk-pass",
 	}
 	// User lines passed out of order must be sorted deterministically.
-	out := RenderUsersACL(true, pw, []string{"user zed on +@read", "user abe on +@read"})
+	out := RenderUsersACL(true, pw, []string{"user zed on +@read", "user abe on +@read"}, "def-pass")
 
 	opHash := sha256.Sum256([]byte("op-pass"))
 	wantOpLine := "user _operator on #" + hex.EncodeToString(opHash[:]) + " " + wantOperatorRules
 	if !strings.Contains(out, wantOpLine) {
 		t.Fatalf("operator line not verbatim/hashed:\n%s\nwant line: %s", out, wantOpLine)
 	}
-	// Cleartext password must never appear.
-	if strings.Contains(out, "op-pass") {
+	// The default-user line MUST be present and password-gated so the aclfile and
+	// requirepass agree (otherwise the engine leaves default nopass — auth not
+	// enforced). It must use the hash, never cleartext.
+	defHash := sha256.Sum256([]byte("def-pass"))
+	wantDefLine := "user default on #" + hex.EncodeToString(defHash[:]) + " ~* &* +@all"
+	if !strings.Contains(out, wantDefLine) {
+		t.Fatalf("default user line missing/not hashed:\n%s\nwant line: %s", out, wantDefLine)
+	}
+	// Cleartext passwords must never appear.
+	if strings.Contains(out, "op-pass") || strings.Contains(out, "def-pass") {
 		t.Fatalf("cleartext password leaked into ACL:\n%s", out)
 	}
 	// Deterministic ordering: abe before zed.
@@ -146,8 +154,15 @@ func TestRenderUsersACLDeterministicAndHashed(t *testing.T) {
 		t.Fatalf("user lines not sorted:\n%s", out)
 	}
 	// Two renders are byte-identical.
-	if RenderUsersACL(true, pw, []string{"user abe on +@read", "user zed on +@read"}) != out {
+	if RenderUsersACL(true, pw, []string{"user abe on +@read", "user zed on +@read"}, "def-pass") != out {
 		t.Fatal("RenderUsersACL is not deterministic")
+	}
+
+	// Empty default-user password (auth disabled) => explicit nopass default line,
+	// agreeing with the absent requirepass directive.
+	noAuth := RenderUsersACL(true, pw, nil, "")
+	if !strings.Contains(noAuth, "user default on nopass ~* &* +@all") {
+		t.Fatalf("nopass default line missing when auth disabled:\n%s", noAuth)
 	}
 }
 
