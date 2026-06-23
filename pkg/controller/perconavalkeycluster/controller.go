@@ -408,7 +408,39 @@ func (r *Reconciler) bootstrapJoin(
 	if replicated > 0 {
 		return r.progressRequeue(ctx, cluster, "attaching replicas")
 	}
+
+	// Phase 12b: gossip repair (Bug #1). The normal bootstrap MEET/ADDSLOTS/
+	// REPLICATE phases above made no progress this pass, yet the live cluster is
+	// not converged (some node reports cluster_state != ok) while every backing
+	// ValkeyNode is Ready. That is the stale-gossip partition: all pods restarted
+	// and changed IPs at once, so each engine kept its peers in nodes.conf
+	// (KnownNodes>1, invisible to the isolated-node MEET above) but only at dead
+	// addresses, and gossip can never self-heal. Re-MEET every reachable node to
+	// one target at its CURRENT scrape address. The cluster_state:ok guard +
+	// meetAllReachable's own converged-gossip no-op together guarantee a HEALTHY
+	// cluster NEVER re-MEETs (no steady-state churn).
+	if !state.AllReachableClusterStateOK() && allNodesReady(nodes) {
+		if met := r.repairStaleGossip(ctx, cluster, state); met > 0 {
+			return r.progressRequeue(ctx, cluster, "repairing stale gossip via CLUSTER MEET")
+		}
+	}
 	return false, ctrl.Result{}, nil
+}
+
+// allNodesReady reports whether every listed ValkeyNode is Ready — the gate for
+// the gossip-repair step, so a non-ok cluster_state during a genuine node
+// outage (a pod still coming up) is left to the normal bootstrap/recovery
+// phases rather than triggering a re-MEET. An empty list is not ready.
+func allNodesReady(nodes *valkeyv1alpha1.ValkeyNodeList) bool {
+	if nodes == nil || len(nodes.Items) == 0 {
+		return false
+	}
+	for i := range nodes.Items {
+		if !nodes.Items[i].Status.Ready {
+			return false
+		}
+	}
+	return true
 }
 
 // progressRequeue marks Progressing=True with the message, writes status, and

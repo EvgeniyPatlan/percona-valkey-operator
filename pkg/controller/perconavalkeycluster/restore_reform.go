@@ -17,10 +17,8 @@ limitations under the License.
 package perconavalkeycluster
 
 import (
-	"cmp"
 	"context"
 	"fmt"
-	"slices"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -84,51 +82,7 @@ func (r *Reconciler) reformRestoreTarget(
 func (r *Reconciler) meetAllRestoreNodes(
 	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster, state *valkey.ClusterState,
 ) int {
-	log := logf.FromContext(ctx)
-
-	reachable := make([]*valkey.NodeState, 0, len(state.Nodes))
-	for _, n := range state.Nodes {
-		if n.Client() != nil {
-			reachable = append(reachable, n)
-		}
-	}
-	if len(reachable) < 2 {
-		return 0
-	}
-	slices.SortFunc(reachable, func(a, b *valkey.NodeState) int { return cmp.Compare(a.Addr, b.Addr) })
-
-	// If every node already sees every peer, gossip has converged — nothing to MEET.
-	allConverged := true
-	for _, n := range reachable {
-		if n.KnownNodes < len(reachable) {
-			allConverged = false
-			break
-		}
-	}
-	if allConverged {
-		return 0
-	}
-
-	target := reachable[0]
-	met := 0
-	for _, n := range reachable[1:] {
-		nodeIP := hostFromAddr(n.Addr)
-		targetIP := hostFromAddr(target.Addr)
-		if err := target.Client().ClusterMeet(ctx, nodeIP, valkey.ClientPort, valkey.BusPort); err != nil {
-			log.V(1).Info("restore re-form MEET target->node failed", "node", n.Addr, "err", err.Error())
-			continue
-		}
-		if err := n.Client().ClusterMeet(ctx, targetIP, valkey.ClientPort, valkey.BusPort); err != nil {
-			log.V(1).Info("restore re-form MEET node->target failed", "node", n.Addr, "err", err.Error())
-			continue
-		}
-		met++
-	}
-	if met > 0 {
-		r.recorder.Eventf(cluster, nil, eventNormal, EventClusterMeetBatch, "ClusterMeet",
-			"restore re-form: MEET introduced %d node(s)", met)
-	}
-	return met
+	return r.meetAllReachable(ctx, cluster, state, false, "restore re-form: MEET introduced %d node(s)")
 }
 
 // assignRestoreSlotRanges assigns each shard primary the GAP slots in its canonical

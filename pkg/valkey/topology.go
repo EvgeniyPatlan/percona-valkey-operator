@@ -25,6 +25,26 @@ func (n *NodeState) IsIsolated() bool {
 	return n.KnownNodes <= 1
 }
 
+// AllReachableClusterStateOK reports whether every reachable (scraped) node
+// self-reports cluster_state:ok. False means at least one node still considers
+// the cluster down — slots uncovered, a primary majority unreachable, or (the
+// case the gossip-repair step targets) a populated-but-stale gossip table after
+// a simultaneous IP-changing restart, where every node still "knows" its peers
+// (KnownNodes>1, so IsIsolated is false) but only at dead IPs and so can never
+// re-converge on its own. Returns false when there are no nodes (nothing to
+// affirm). 05 §2.
+func (s *ClusterState) AllReachableClusterStateOK() bool {
+	if len(s.Nodes) == 0 {
+		return false
+	}
+	for _, n := range s.Nodes {
+		if !n.ClusterStateOK {
+			return false
+		}
+	}
+	return true
+}
+
 // GetUnassignedSlots returns the slot ranges not owned by any shard primary —
 // the gaps in 0..maxSlot (05 §2). An empty result means full coverage, the gate
 // for marking the cluster Ready.

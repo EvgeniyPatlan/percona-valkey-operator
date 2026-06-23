@@ -73,7 +73,7 @@ func ScrapeNode(ctx context.Context, addr string, c ClusterClient) (*NodeState, 
 // NODES by the id, layering the live INFO-replication role/offset/link over the
 // parsed myself line and attaching every peer line as a peerView.
 func nodeStateFromScrape(id, shardID, addr, infoRepl, clusterInfo, clusterNodes string) *NodeState {
-	_, _, knownNodes := ParseClusterInfo(clusterInfo)
+	clusterStateStr, _, knownNodes := ParseClusterInfo(clusterInfo)
 	clusterSize, currentEpoch := parseClusterSizeEpoch(clusterInfo)
 	role, linkUp, offset, _ := ParseInfoReplicationTyped(infoRepl)
 
@@ -82,15 +82,16 @@ func nodeStateFromScrape(id, shardID, addr, infoRepl, clusterInfo, clusterNodes 
 	// epoch/bus port; everything else is overlaid from the live INFO read.
 	parsed, _ := ParseClusterNodes(clusterNodes)
 	n := &NodeState{
-		ID:           id,
-		ShardID:      shardID,
-		Addr:         addr,
-		Role:         role,
-		LinkUp:       linkUp,
-		Offset:       offset,
-		KnownNodes:   knownNodes,
-		ClusterSize:  clusterSize,
-		CurrentEpoch: currentEpoch,
+		ID:             id,
+		ShardID:        shardID,
+		Addr:           addr,
+		Role:           role,
+		LinkUp:         linkUp,
+		Offset:         offset,
+		KnownNodes:     knownNodes,
+		ClusterStateOK: clusterStateStr == ClusterStateOK,
+		ClusterSize:    clusterSize,
+		CurrentEpoch:   currentEpoch,
 	}
 	for _, p := range parsed {
 		if n.peers == nil {

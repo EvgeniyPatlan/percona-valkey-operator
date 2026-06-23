@@ -132,6 +132,109 @@ func (r *Reconciler) meetIsolatedNodes(
 	return met, nil
 }
 
+// repairStaleGossip re-MEETs every reachable node to a single deterministic
+// target at its CURRENT scrape address when the live cluster is NOT converged
+// (some node reports cluster_state != ok) while every backing ValkeyNode is
+// Ready — the stale-gossip partition (Bug #1).
+//
+// The failure it heals: when ALL pods restart and change IPs simultaneously,
+// each engine reloads its nodes.conf and keeps every peer in its gossip table
+// (so KnownNodes stays > 1 and IsIsolated is false — meetIsolatedNodes skips
+// them) but only at the now-dead pre-restart IPs, so the bus links stay down,
+// gossip never re-converges, and cluster_state sticks at fail with zero
+// messages received. The operator HAS the fresh IPs (ValkeyNode.Status.PodIP,
+// which the scrape dialed), so re-introducing every node to one target at its
+// real address rebuilds the live links and gossip repairs itself.
+//
+// It is bounded so a HEALTHY cluster NEVER re-MEETs: the cluster_state:ok gate
+// (checked by the caller) is the steady-state guard, and meetAllReachable
+// itself is additionally a no-op once gossip has converged (every node already
+// sees every reachable peer). Together they guarantee no steady-state MEET
+// churn. Returns the number of nodes re-introduced this pass.
+func (r *Reconciler) repairStaleGossip(
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster, state *valkey.ClusterState,
+) int {
+	// skipKnownNodesGuard=true: in a stale-gossip partition every node still KNOWS
+	// every peer (KnownNodes==N) so the KnownNodes-based "converged" guard would
+	// wrongly suppress the repair. The caller has already established genuine
+	// non-convergence via cluster_state != ok (the steady-state ok-guard is what
+	// prevents churn here), so the re-MEET at current addresses must proceed.
+	return r.meetAllReachable(ctx, cluster, state, true, "gossip repair: re-MEET %d node(s) at current addresses")
+}
+
+// meetAllReachable MEETs every reachable scraped node to a single deterministic
+// target (bidirectionally, address-sorted) at its CURRENT scrape address, so a
+// set of nodes that each booted with a single-node or stale gossip view rejoins
+// one cluster. It is the shared core of the restore re-form (seeded shards) and
+// the stale-gossip repair (simultaneous IP-changing restart) MEET-all paths.
+//
+// Unlike meetIsolatedNodes it does NOT require the nodes to be zero-slot/pending
+// (seeded primaries own scattered slots; a restarted primary owns its full
+// range) and it dials the LIVE address so stale RDB/nodes.conf-recorded peers
+// are bypassed. When skipKnownNodesGuard is false it is a NO-OP once gossip has
+// converged — every reachable node already sees every reachable peer (the
+// restore-reform path, where high KnownNodes genuinely means converged). The
+// stale-gossip repair passes skipKnownNodesGuard=true because there KnownNodes
+// stays high while the bus links are dead; that caller is instead gated on
+// cluster_state != ok so it still never churns a healthy cluster. The
+// progressMsg is the recorder format string (one %d for the count). Returns the
+// number of nodes introduced this pass.
+func (r *Reconciler) meetAllReachable(
+	ctx context.Context, cluster *valkeyv1alpha1.PerconaValkeyCluster, state *valkey.ClusterState,
+	skipKnownNodesGuard bool, progressMsg string,
+) int {
+	log := logf.FromContext(ctx)
+
+	reachable := make([]*valkey.NodeState, 0, len(state.Nodes))
+	for _, n := range state.Nodes {
+		if n.Client() != nil {
+			reachable = append(reachable, n)
+		}
+	}
+	if len(reachable) < 2 {
+		return 0
+	}
+	slices.SortFunc(reachable, func(a, b *valkey.NodeState) int { return strings.Compare(a.Addr, b.Addr) })
+
+	// If every node already sees every peer, gossip has converged — nothing to
+	// MEET. This is the steady-state guard that prevents churn on a healthy
+	// cluster even if the caller ever invoked us spuriously. The stale-gossip
+	// repair skips it (KnownNodes stays high there) and relies on its own
+	// cluster_state != ok gate instead.
+	if !skipKnownNodesGuard {
+		allConverged := true
+		for _, n := range reachable {
+			if n.KnownNodes < len(reachable) {
+				allConverged = false
+				break
+			}
+		}
+		if allConverged {
+			return 0
+		}
+	}
+
+	target := reachable[0]
+	met := 0
+	for _, n := range reachable[1:] {
+		nodeIP := hostFromAddr(n.Addr)
+		targetIP := hostFromAddr(target.Addr)
+		if err := target.Client().ClusterMeet(ctx, nodeIP, valkey.ClientPort, valkey.BusPort); err != nil {
+			log.V(1).Info("meet-all target->node failed", "node", n.Addr, "err", err.Error())
+			continue
+		}
+		if err := n.Client().ClusterMeet(ctx, targetIP, valkey.ClientPort, valkey.BusPort); err != nil {
+			log.V(1).Info("meet-all node->target failed", "node", n.Addr, "err", err.Error())
+			continue
+		}
+		met++
+	}
+	if met > 0 {
+		r.recorder.Eventf(cluster, nil, eventNormal, EventClusterMeetBatch, "ClusterMeet", progressMsg, met)
+	}
+	return met
+}
+
 // isolatedPendingNodes returns the pending nodes still isolated (need MEET).
 func isolatedPendingNodes(state *valkey.ClusterState) []*valkey.NodeState {
 	var isolated []*valkey.NodeState

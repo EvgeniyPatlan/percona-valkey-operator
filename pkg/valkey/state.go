@@ -99,6 +99,13 @@ type NodeState struct {
 	Slots []SlotRange
 	// KnownNodes is cluster_known_nodes from this node's CLUSTER INFO.
 	KnownNodes int
+	// ClusterStateOK reports whether this node's CLUSTER INFO cluster_state is
+	// "ok" — the per-node self-assessment that all slots are covered and the
+	// node can reach a primary majority. A node with a populated-but-stale
+	// gossip table (peers known at dead IPs after a simultaneous IP-changing
+	// restart) reports false here even though KnownNodes>1, which is the signal
+	// the gossip-repair step keys on (it is invisible to the IsIsolated check).
+	ClusterStateOK bool
 	// ClusterSize is cluster_size (slot-owning primaries) from CLUSTER INFO.
 	ClusterSize int
 	// CurrentEpoch is cluster_current_epoch from CLUSTER INFO.

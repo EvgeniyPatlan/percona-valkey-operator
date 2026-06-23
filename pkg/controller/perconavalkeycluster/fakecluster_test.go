@@ -71,6 +71,15 @@ type fakeNodeState struct {
 	// failed marks the node hard-failed in gossip (its peers see fail/fail?),
 	// simulating a lost primary for the recovery specs.
 	failed bool
+	// staleGossip models the Bug #1 stale-gossip partition: after a simultaneous
+	// IP-changing restart the node still KNOWS its peers (the `known` set is
+	// intact, so KnownNodes>1 and IsIsolated is false) but only at dead
+	// pre-restart addresses, so the bus links are down and the node reports
+	// cluster_state:fail. A CLUSTER MEET issued at this node's CURRENT address
+	// (from another node, or from itself to a target) re-establishes its link and
+	// clears the flag — modelling the operator's gossip-repair re-introducing the
+	// node at its fresh IP. Slots/known are untouched (this is NOT a fresh boot).
+	staleGossip bool
 }
 
 // recordedCall is one issued orchestration command, in order.
@@ -210,7 +219,9 @@ func (n *fakeNode) ClusterInfo(context.Context) (string, error) {
 	defer n.fc.mu.Unlock()
 	s := n.self()
 	state := "fail"
-	if n.fc.totalAssignedSlots() >= valkey.TotalSlots {
+	if n.fc.totalAssignedSlots() >= valkey.TotalSlots && !s.staleGossip {
+		// All slots covered AND this node's bus links are live (not partitioned by
+		// a stale-gossip restart): the engine reports cluster_state:ok.
 		state = "ok"
 	}
 	// cluster_size = count of slot-owning primaries.
@@ -342,6 +353,11 @@ func (n *fakeNode) ClusterMeet(_ context.Context, ip string, _, _ int) error {
 		return nil
 	}
 	n.fc.metPairs[self.id+"->"+peer.id] = true
+	// A MEET at the CURRENT address re-establishes the bus link on both endpoints,
+	// clearing any stale-gossip partition (Bug #1 repair): the operator re-MEETs
+	// every node to one target, so both ends of each MEET recover.
+	self.staleGossip = false
+	peer.staleGossip = false
 	// Simulate gossip: union the known sets of every node reachable from either.
 	n.fc.gossipConverge(self, peer)
 	return nil
@@ -522,6 +538,37 @@ func (fc *fakeCluster) failPrimary(podIP string) {
 	if n := fc.nodes[podIP+":6379"]; n != nil {
 		n.failed = true
 	}
+}
+
+// markAllStaleGossip simulates a simultaneous IP-changing restart of every node
+// (Bug #1): each node keeps its full gossip table (known set intact, so
+// KnownNodes>1 and IsIsolated stays false) but its bus links are down at the
+// dead pre-restart addresses, so every node reports cluster_state:fail and
+// gossip can never re-converge on its own. The operator's gossip-repair step
+// must re-MEET them at their current addresses to recover. Returns the count of
+// nodes partitioned.
+func (fc *fakeCluster) markAllStaleGossip() int {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	n := 0
+	for _, nd := range fc.nodes {
+		nd.staleGossip = true
+		n++
+	}
+	return n
+}
+
+// anyStaleGossip reports whether any node is still partitioned by a stale-gossip
+// restart (used to assert the operator's repair cleared every node).
+func (fc *fakeCluster) anyStaleGossip() bool {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	for _, nd := range fc.nodes {
+		if nd.staleGossip {
+			return true
+		}
+	}
+	return false
 }
 
 // addStaleGossipNode injects a stale node into the simulator that is present in

@@ -324,3 +324,46 @@ func TestEffectivePrimaryCount(t *testing.T) {
 		t.Errorf("with a pending primary EffectivePrimaryCount = %d, want 4", got)
 	}
 }
+
+// TestAllReachableClusterStateOK covers the Bug #1 non-convergence signal: it is
+// the cluster_state:ok gate that bounds the gossip-repair step so a healthy
+// cluster never re-MEETs, and it fires on the stale-gossip case (KnownNodes>1 yet
+// cluster_state != ok) that IsIsolated cannot see.
+func TestAllReachableClusterStateOK(t *testing.T) {
+	// Empty state: nothing to affirm.
+	if (&ClusterState{}).AllReachableClusterStateOK() {
+		t.Error("empty state must report not-ok")
+	}
+	// All nodes ok -> ok (the healthy steady state that must NOT trigger repair).
+	allOK := NewClusterState([]*NodeState{
+		{ID: "a", Addr: "10.0.0.1:6379", KnownNodes: 3, ClusterStateOK: true},
+		{ID: "b", Addr: "10.0.0.2:6379", KnownNodes: 3, ClusterStateOK: true},
+		{ID: "c", Addr: "10.0.0.3:6379", KnownNodes: 3, ClusterStateOK: true},
+	})
+	if !allOK.AllReachableClusterStateOK() {
+		t.Error("all nodes cluster_state:ok must report ok (no repair)")
+	}
+	// Stale-gossip partition: every node still KNOWS its peers (KnownNodes>1, so
+	// none is IsIsolated) but reports cluster_state:fail -> not ok (repair fires).
+	stale := NewClusterState([]*NodeState{
+		{ID: "a", Addr: "10.0.0.1:6379", KnownNodes: 3, ClusterStateOK: false},
+		{ID: "b", Addr: "10.0.0.2:6379", KnownNodes: 3, ClusterStateOK: false},
+		{ID: "c", Addr: "10.0.0.3:6379", KnownNodes: 3, ClusterStateOK: false},
+	})
+	for _, n := range stale.Nodes {
+		if n.IsIsolated() {
+			t.Fatalf("stale node %s must NOT be isolated (KnownNodes>1)", n.ID)
+		}
+	}
+	if stale.AllReachableClusterStateOK() {
+		t.Error("a stale-gossip partition (cluster_state:fail) must report not-ok so repair fires")
+	}
+	// A single non-ok node is enough to withhold ok.
+	mixed := NewClusterState([]*NodeState{
+		{ID: "a", Addr: "10.0.0.1:6379", ClusterStateOK: true},
+		{ID: "b", Addr: "10.0.0.2:6379", ClusterStateOK: false},
+	})
+	if mixed.AllReachableClusterStateOK() {
+		t.Error("one non-ok node must withhold cluster-wide ok")
+	}
+}

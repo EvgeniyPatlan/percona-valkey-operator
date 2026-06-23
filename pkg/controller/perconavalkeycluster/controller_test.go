@@ -201,6 +201,70 @@ var _ = ginkgo.Describe("PerconaValkeyCluster controller bootstrap", func() {
 		gomega.Expect(fc.callsOfType("REPLICATE")).To(gomega.HaveLen(3))
 	})
 
+	ginkgo.It("repairs a stale-gossip partition (Bug #1): re-MEETs all nodes at current addresses and re-converges, but a healthy cluster never churns", func() {
+		// Form a healthy 3-shard cluster.
+		cluster := makeCluster("cgossip", ns, 3)
+		gomega.Expect(k8sClient.Create(testCtx, cluster)).To(gomega.Succeed())
+		key := client.ObjectKeyFromObject(cluster)
+		reconcileUntilReady(r, key, 40)
+
+		formed := &valkeyv1alpha1.PerconaValkeyCluster{}
+		gomega.Expect(k8sClient.Get(testCtx, key, formed)).To(gomega.Succeed())
+		gomega.Expect(formed.Status.State).To(gomega.Equal(valkeyv1alpha1.StateReady))
+
+		// STEADY-STATE GUARD: a healthy (cluster_state:ok) cluster must NOT re-MEET.
+		// Run several steady reconciles and assert the MEET count does not grow — the
+		// gossip-repair step must never fire on a converged cluster (no churn).
+		meetsAfterForm := len(fc.callsOfType("MEET"))
+		for i := 0; i < 5; i++ {
+			_, err := r.Reconcile(testCtx, ctrl.Request{NamespacedName: key})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			promoteNodes(ns)
+		}
+		gomega.Expect(len(fc.callsOfType("MEET"))).To(gomega.Equal(meetsAfterForm),
+			"a healthy cluster must not re-MEET (no steady-state gossip-repair churn)")
+
+		// Now simulate the Bug #1 stale-gossip partition: every node restarted and
+		// changed IPs at once, so each KNOWS its peers (KnownNodes>1, NOT isolated)
+		// but only at dead addresses — every node reports cluster_state:fail and the
+		// normal isolated-node MEET cannot see them.
+		partitioned := fc.markAllStaleGossip()
+		gomega.Expect(partitioned).To(gomega.Equal(6))
+		gomega.Expect(fc.anyStaleGossip()).To(gomega.BeTrue())
+
+		// One reconcile must trigger the gossip-repair re-MEET (all nodes Ready +
+		// cluster_state != ok) and a couple more let gossip re-converge.
+		for i := 0; i < 5; i++ {
+			_, err := r.Reconcile(testCtx, ctrl.Request{NamespacedName: key})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			promoteNodes(ns)
+			if !fc.anyStaleGossip() {
+				break
+			}
+		}
+
+		// The partition was repaired: every node's bus link recovered and the
+		// cluster self-reports ok again, WITHOUT any manual CLUSTER MEET.
+		gomega.Expect(fc.anyStaleGossip()).To(gomega.BeFalse(),
+			"gossip-repair must re-MEET every stale node at its current address")
+		// The repair issued fresh MEETs (the count grew past the healthy baseline).
+		gomega.Expect(len(fc.callsOfType("MEET"))).To(gomega.BeNumerically(">", meetsAfterForm),
+			"the gossip-repair step must have re-issued CLUSTER MEET")
+
+		// Cluster returns Ready and stays churn-free again.
+		repaired := &valkeyv1alpha1.PerconaValkeyCluster{}
+		gomega.Expect(k8sClient.Get(testCtx, key, repaired)).To(gomega.Succeed())
+		gomega.Expect(repaired.Status.State).To(gomega.Equal(valkeyv1alpha1.StateReady))
+		meetsAfterRepair := len(fc.callsOfType("MEET"))
+		for i := 0; i < 3; i++ {
+			_, err := r.Reconcile(testCtx, ctrl.Request{NamespacedName: key})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			promoteNodes(ns)
+		}
+		gomega.Expect(len(fc.callsOfType("MEET"))).To(gomega.Equal(meetsAfterRepair),
+			"a re-converged cluster must not keep re-MEETing")
+	})
+
 	ginkgo.It("forms a minimal single-shard cluster with no tls/persistence/backup (has()-guard discipline)", func() {
 		// A minimal spec: no TLS, no persistence, no backup. replicas defaults to
 		// 1 (the CRD default marker stamps it since the field is omitempty), so the
