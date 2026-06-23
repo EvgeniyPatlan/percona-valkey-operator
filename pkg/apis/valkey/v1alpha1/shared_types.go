@@ -177,10 +177,17 @@ type SecretRef struct {
 // ExporterSpec configures the Prometheus exporter sidecar. When enabled, the
 // _exporter system user is provisioned.
 type ExporterSpec struct {
+	// Implementation note (kept out of the CRD description by the blank line below):
+	// no omitempty on Enabled — a non-pointer bool with +kubebuilder:default=true must
+	// always serialize, otherwise the operator propagating enabled=false to a ValkeyNode
+	// drops the field and the API server re-applies the true default, re-enabling the
+	// sidecar while the _exporter ACL user (rendered at cluster scope) is correctly
+	// omitted. Guarded by TestDefaultedTrueBoolSerializesFalse.
+
 	// enabled toggles the exporter sidecar.
 	// +kubebuilder:default=true
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 	// image overrides the exporter image. Defaults to the operator exporter image.
 	// +optional
 	Image string `json:"image,omitempty"`
@@ -278,10 +285,15 @@ type UserACLSpec struct {
 	// users (_operator/_exporter/_backup) and are rejected.
 	// +kubebuilder:validation:XValidation:rule="!self.startsWith('_')",message="usernames starting with _ are reserved for system users"
 	Name string `json:"name"`
+	// Implementation note (excluded from the CRD description by the blank line below):
+	// no omitempty — same defaulted-true-bool footgun as ExporterSpec.Enabled; an
+	// explicit enabled=false must survive a round-trip, not be dropped and re-defaulted
+	// to true.
+
 	// enabled toggles the ACL user.
 	// +kubebuilder:default=true
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 	// passwordSecret references the Secret holding the user's password(s).
 	// +optional
 	PasswordSecret UserPasswordSecret `json:"passwordSecret,omitempty"`

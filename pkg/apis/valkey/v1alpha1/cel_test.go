@@ -25,6 +25,7 @@ import (
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -119,21 +120,53 @@ var _ = ginkgo.Describe("Cluster defaulting via the API server", func() {
 		gomega.Expect(got.Spec.WorkloadType).To(gomega.Equal(v1.WorkloadStatefulSet))
 		gomega.Expect(got.Spec.Replicas).To(gomega.Equal(int32(1)))
 		gomega.Expect(got.Spec.PodDisruptionBudget).To(gomega.Equal(v1.PDBManaged))
-		gomega.Expect(got.Spec.Exporter.Enabled).To(gomega.BeTrue())
 		gomega.Expect(got.Spec.Pause).To(gomega.BeFalse())
+		// exporter.enabled defaulting is verified in the unstructured spec below: a
+		// typed bool (no omitempty) always serializes, so the typed zero value sends
+		// enabled=false explicitly rather than letting the API server default it.
 	})
 
-	ginkgo.It("defaults users[].enabled and persistence.reclaimPolicy", func() {
+	ginkgo.It("defaults persistence.reclaimPolicy on a nested cluster", func() {
 		c := newCluster("defaults-nested")
 		c.Spec.WorkloadType = v1.WorkloadStatefulSet
 		c.Spec.Persistence = &v1.PersistenceSpec{Size: resource.MustParse("10Gi")}
-		c.Spec.Users = []v1.UserACLSpec{{Name: "app"}}
 		gomega.Expect(k8s.Create(ctx, c)).To(gomega.Succeed())
 
 		got := &v1.PerconaValkeyCluster{}
 		gomega.Expect(k8s.Get(ctx, client.ObjectKeyFromObject(c), got)).To(gomega.Succeed())
 		gomega.Expect(got.Spec.Persistence.ReclaimPolicy).To(gomega.Equal(v1.ReclaimRetain))
-		gomega.Expect(got.Spec.Users[0].Enabled).To(gomega.BeTrue())
+	})
+
+	ginkgo.It("defaults absent exporter/user enabled to true but preserves an explicit false", func() {
+		// (a) ABSENT enabled -> the API server applies +kubebuilder:default=true. Built
+		// via unstructured because a typed bool (no omitempty, by design) cannot omit
+		// the field — only a genuinely-absent value triggers server-side defaulting.
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(v1.GroupVersion.WithKind("PerconaValkeyCluster"))
+		u.SetName("defaults-enabled-absent")
+		u.SetNamespace("default")
+		u.Object["spec"] = map[string]interface{}{
+			"mode":     string(v1.ModeCluster),
+			"shards":   int64(3),
+			"exporter": map[string]interface{}{},                             // enabled absent
+			"users":    []interface{}{map[string]interface{}{"name": "app"}}, // enabled absent
+		}
+		gomega.Expect(k8s.Create(ctx, u)).To(gomega.Succeed())
+		gotAbsent := &v1.PerconaValkeyCluster{}
+		gomega.Expect(k8s.Get(ctx, types.NamespacedName{Name: "defaults-enabled-absent", Namespace: "default"}, gotAbsent)).To(gomega.Succeed())
+		gomega.Expect(gotAbsent.Spec.Exporter.Enabled).To(gomega.BeTrue(), "absent exporter.enabled defaults to true")
+		gomega.Expect(gotAbsent.Spec.Users[0].Enabled).To(gomega.BeTrue(), "absent users[].enabled defaults to true")
+
+		// (b) EXPLICIT false is preserved (the omitempty fix): a defaulted-true bool set
+		// to false must NOT be silently re-defaulted to true on round-trip.
+		c := newCluster("defaults-enabled-false")
+		c.Spec.Exporter = v1.ExporterSpec{Enabled: false}
+		c.Spec.Users = []v1.UserACLSpec{{Name: "app", Enabled: false}}
+		gomega.Expect(k8s.Create(ctx, c)).To(gomega.Succeed())
+		gotFalse := &v1.PerconaValkeyCluster{}
+		gomega.Expect(k8s.Get(ctx, client.ObjectKeyFromObject(c), gotFalse)).To(gomega.Succeed())
+		gomega.Expect(gotFalse.Spec.Exporter.Enabled).To(gomega.BeFalse(), "explicit exporter.enabled=false is preserved")
+		gomega.Expect(gotFalse.Spec.Users[0].Enabled).To(gomega.BeFalse(), "explicit users[].enabled=false is preserved")
 	})
 
 	ginkgo.It("applies the new gap-analysis field marker defaults", func() {
