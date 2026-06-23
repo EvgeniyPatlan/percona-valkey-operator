@@ -17,8 +17,6 @@ limitations under the License.
 package valkeynode
 
 import (
-	"strings"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -34,13 +32,6 @@ func ptrTo[T any](v T) *T { return &v }
 // for compile-time-constant defaults (never user input).
 func mustQuantity(s string) resource.Quantity {
 	return resource.MustParse(s)
-}
-
-// shellJoin joins args into a single shell-safe word sequence for embedding in a
-// `sh -c` readiness command. The args are operator-controlled (cli flags), so a
-// simple space join is sufficient.
-func shellJoin(args []string) string {
-	return strings.Join(args, " ")
 }
 
 // setCondition upserts a condition on the node status with ObservedGeneration

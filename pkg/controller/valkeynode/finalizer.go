@@ -84,7 +84,10 @@ func (r *Reconciler) reconcileTeardown(
 // was Delete. 04 §6.3.
 func (r *Reconciler) cleanupPVC(ctx context.Context, node *valkeyv1alpha1.ValkeyNode) error {
 	pvc := &corev1.PersistentVolumeClaim{}
-	key := types.NamespacedName{Name: naming.NodePVCName(node.Name), Namespace: node.Namespace}
+	// Target the StatefulSet-materialized PVC (<vctName>-<stsName>-0); the bare
+	// volumeClaimTemplate name never exists as a standalone object, so deleting it
+	// would silently leak the real PVC on a reclaimPolicy=Delete teardown.
+	key := types.NamespacedName{Name: naming.NodeStatefulSetPVCName(node.Name), Namespace: node.Namespace}
 	if err := r.Get(ctx, key, pvc); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil

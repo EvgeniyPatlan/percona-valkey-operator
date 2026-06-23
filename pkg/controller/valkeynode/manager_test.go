@@ -124,9 +124,12 @@ var _ = ginkgo.Describe("ValkeyNode controller via the shared manager", func() {
 			return conditionIs(got, valkeyv1alpha1.NodeConditionPVCReady, metav1.ConditionFalse)
 		}, timeout, interval).Should(gomega.BeTrue())
 
-		// Create + bind the PVC the STS would normally provision.
+		// Create + bind the PVC the STS would normally provision. The STS controller
+		// materializes the volumeClaimTemplate as <vctName>-<stsName>-0, which is the
+		// name the node controller reads — so use that name here (envtest has no STS
+		// controller to create it).
 		pvc := &corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: "valkey-pvcnode-data", Namespace: mgrNamespace},
+			ObjectMeta: metav1.ObjectMeta{Name: "valkey-pvcnode-data-valkey-pvcnode-0", Namespace: mgrNamespace},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 				Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},

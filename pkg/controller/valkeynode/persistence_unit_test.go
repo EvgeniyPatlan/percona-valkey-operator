@@ -91,20 +91,32 @@ func TestResizeMessage(t *testing.T) {
 	}
 }
 
-func TestStorageClassEqual(t *testing.T) {
-	a, b := "fast", "fast"
-	c := "slow"
-	if !storageClassEqual(nil, nil) {
-		t.Error("nil==nil")
+func TestStorageClassChanged(t *testing.T) {
+	fast, fast2, slow, empty := "fast", "fast", "slow", ""
+
+	// Unset desired (nil or "") => "use default"; never a change, even when the
+	// live PVC has a defaulted concrete class (the false-positive the guard must
+	// not raise on a cluster that omits storageClassName).
+	if storageClassChanged(nil, nil) {
+		t.Error("nil/nil must not be a change")
 	}
-	if storageClassEqual(&a, nil) || storageClassEqual(nil, &a) {
-		t.Error("one-nil should be unequal")
+	if storageClassChanged(&slow, nil) {
+		t.Error("nil desired must not be a change even when live class is set")
 	}
-	if !storageClassEqual(&a, &b) {
-		t.Error("fast==fast")
+	if storageClassChanged(&slow, &empty) {
+		t.Error("empty desired must not be a change")
 	}
-	if storageClassEqual(&a, &c) {
-		t.Error("fast!=slow")
+	// Live class not yet bound: nothing to compare against.
+	if storageClassChanged(nil, &fast) {
+		t.Error("nil live (unbound) must not be a change")
+	}
+	// Explicit, matching class => not a change.
+	if storageClassChanged(&fast, &fast2) {
+		t.Error("fast->fast must not be a change")
+	}
+	// Explicit, differing class => the real immutable violation.
+	if !storageClassChanged(&fast, &slow) {
+		t.Error("fast->slow must be a change")
 	}
 }
 

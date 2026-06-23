@@ -63,6 +63,14 @@ func NewClient(addr string, auth Auth, tlsConfig *tls.Config) (ClusterClient, er
 		TLSConfig:         tlsConfig,
 		Username:          auth.Username,
 		Password:          auth.Password,
+		// DisableCache MUST be true: the operator only issues simple
+		// command/response orchestration calls and never needs RESP3 client-side
+		// caching. With caching enabled, valkey-go probes the server with
+		// `CLIENT TRACKING ON OPTIN` on connect — a command the restricted
+		// _operator ACL user is denied (NOPERM client|tracking), which fails the
+		// dial outright. Disabling caching skips that probe so the locked-down
+		// _operator user can connect (05 §10).
+		DisableCache: true,
 	}
 	c, err := vgo.NewClient(opt)
 	if err != nil {

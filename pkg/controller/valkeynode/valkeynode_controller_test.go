@@ -342,8 +342,11 @@ var _ = ginkgo.Describe("ValkeyNode controller", func() {
 
 		// Settle the workload (creates the STS, which would create the PVC). Create
 		// the PVC manually since envtest has no STS controller.
+		// The StatefulSet controller would materialize the volumeClaimTemplate as
+		// <vctName>-<stsName>-0; replicate that name here since envtest has no STS
+		// controller.
 		pvc := &corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: "valkey-delreclaim-data", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: "valkey-delreclaim-data-valkey-delreclaim-0", Namespace: "default"},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 				Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},
@@ -358,7 +361,7 @@ var _ = ginkgo.Describe("ValkeyNode controller", func() {
 
 		gomega.Eventually(func() bool {
 			p := &corev1.PersistentVolumeClaim{}
-			err := k8sClient.Get(testCtx, types.NamespacedName{Name: "valkey-delreclaim-data", Namespace: "default"}, p)
+			err := k8sClient.Get(testCtx, types.NamespacedName{Name: "valkey-delreclaim-data-valkey-delreclaim-0", Namespace: "default"}, p)
 			return apierrors.IsNotFound(err) || !p.DeletionTimestamp.IsZero()
 		}, timeout, interval).Should(gomega.BeTrue())
 	})

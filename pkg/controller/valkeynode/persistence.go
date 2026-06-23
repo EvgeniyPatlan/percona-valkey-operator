@@ -52,22 +52,28 @@ func guardPVCImmutable(cur, desired *corev1.PersistentVolumeClaim) error {
 	if desReq.Cmp(curReq) < 0 {
 		return fmt.Errorf("persistence.size may only be expanded (current %s, desired %s)", curReq.String(), desReq.String())
 	}
-	if !storageClassEqual(cur.Spec.StorageClassName, desired.Spec.StorageClassName) {
+	if storageClassChanged(cur.Spec.StorageClassName, desired.Spec.StorageClassName) {
 		return fmt.Errorf("persistence.storageClassName is immutable")
 	}
 	return nil
 }
 
-// storageClassEqual compares two optional storage-class pointers.
-func storageClassEqual(a, b *string) bool {
-	switch {
-	case a == nil && b == nil:
-		return true
-	case a == nil || b == nil:
-		return false
-	default:
-		return *a == *b
+// storageClassChanged reports whether the desired storage class is an immutable
+// *change* from the current one. A nil/empty desired class means "use the cluster
+// default" (spec.persistence.storageClassName was left unset); the API server's
+// default-StorageClass admission then stamps a concrete class onto the live PVC
+// (e.g. "standard"). Comparing that defaulted live class against the nil desired
+// must NOT be flagged as a change, or the guard fires a false positive on every
+// reconcile of a cluster that omits storageClassName. The change is real only when
+// the user EXPLICITLY pins a class that differs from the bound one.
+func storageClassChanged(cur, desired *string) bool {
+	if desired == nil || *desired == "" {
+		return false // unset desired => default; never a violation.
 	}
+	if cur == nil {
+		return false // live class not yet bound; nothing to compare against.
+	}
+	return *cur != *desired
 }
 
 // ensurePVC creates the standalone data PVC, or applies an expand-only resize to
@@ -84,7 +90,10 @@ func (r *Reconciler) ensurePVC(ctx context.Context, node *valkeyv1alpha1.ValkeyN
 	desired := buildPVCTemplate(node, labels)
 
 	cur := &corev1.PersistentVolumeClaim{}
-	key := types.NamespacedName{Name: naming.NodePVCName(node.Name), Namespace: node.Namespace}
+	// The StatefulSet controller materializes the volumeClaimTemplate as
+	// <vctName>-<stsName>-0, NOT the bare NodePVCName (the VCT name), so the live
+	// PVC must be read/resized under the suffixed name.
+	key := types.NamespacedName{Name: naming.NodeStatefulSetPVCName(node.Name), Namespace: node.Namespace}
 	if err := r.Get(ctx, key, cur); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("get pvc %s: %w", key, err)
@@ -126,7 +135,9 @@ func (r *Reconciler) getPVC(ctx context.Context, node *valkeyv1alpha1.ValkeyNode
 		return nil, nil
 	}
 	pvc := &corev1.PersistentVolumeClaim{}
-	key := types.NamespacedName{Name: naming.NodePVCName(node.Name), Namespace: node.Namespace}
+	// Read the StatefulSet-materialized PVC (<vctName>-<stsName>-0), not the bare
+	// volumeClaimTemplate name which never exists as a standalone object.
+	key := types.NamespacedName{Name: naming.NodeStatefulSetPVCName(node.Name), Namespace: node.Namespace}
 	if err := r.Get(ctx, key, pvc); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil

@@ -106,9 +106,22 @@ func NodeWorkloadName(node string) string {
 }
 
 // NodePVCName returns the data PVC name for a ValkeyNode: valkey-<node>-data
-// (Charter, 03 §6.1).
+// (Charter, 03 §6.1). This is the volumeClaimTemplate name on the StatefulSet,
+// NOT the name of the PVC the StatefulSet controller actually materializes — see
+// NodeStatefulSetPVCName.
 func NodePVCName(node string) string {
 	return ResourcePrefix + node + pvcDataSuffix
+}
+
+// NodeStatefulSetPVCName returns the name of the PVC the StatefulSet controller
+// actually creates for a ValkeyNode's single (ordinal-0) pod:
+// <vctName>-<stsName>-0, i.e. valkey-<node>-data-valkey-<node>-0. The STS suffixes
+// each volumeClaimTemplate with "-<podName>"; a ValkeyNode workload always has
+// exactly one replica (ordinal 0), so the live PVC name is fixed. The bare
+// NodePVCName (the VCT name) never exists as a standalone object for an
+// STS-backed node, so PVC reads/resizes must target THIS name.
+func NodeStatefulSetPVCName(node string) string {
+	return NodePVCName(node) + "-" + NodeWorkloadName(node) + "-0"
 }
 
 // NodeConfigMapName returns the per-node ConfigMap name the Node controller

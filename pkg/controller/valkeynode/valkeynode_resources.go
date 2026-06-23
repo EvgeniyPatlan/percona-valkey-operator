@@ -231,34 +231,26 @@ func execProbe(cmd []string, failureThreshold, timeoutSeconds int32) *corev1.Pro
 	}
 }
 
-// buildProbes builds the startup/liveness/readiness probes. Liveness is a bare
-// PING (process-alive only — never coupled to cluster health, 08 §6); readiness
-// adds CLUSTER INFO cluster_state:ok in cluster mode so it gates the roll
-// correctly. Probe scripts/commands are excluded from the config hash (04 §11).
+// buildProbes builds the startup/liveness/readiness probes. All three are a bare
+// PING (process-alive / serving-commands only — never coupled to cluster health,
+// 08 §6). Readiness MUST NOT require CLUSTER INFO cluster_state:ok: during initial
+// bootstrap no node can ever reach cluster_state:ok until the operator has run
+// MEET -> ADDSLOTSRANGE -> REPLICATE, but the cluster controller gates that
+// bootstrap behind every node's pod becoming Ready (nodeConverged -> Status.Ready
+// -> pod Ready). Coupling readiness to cluster_state therefore deadlocks cluster
+// formation (the pod is never Ready, so the operator never bootstraps, so
+// cluster_state never becomes ok). Pod readiness here means "the engine is up and
+// answering commands" so the node is reachable for the operator's CLUSTER
+// orchestration; full cluster health is surfaced via the CR status conditions
+// (ClusterFormed / SlotsAssigned), not pod readiness. Probe scripts/commands are
+// excluded from the config hash (04 §11).
 func buildProbes(node *valkeyv1alpha1.ValkeyNode) (startup, liveness, readiness *corev1.Probe) {
 	cli := valkeyCliArgs(node)
 	ping := append(append([]string{}, cli...), "PING")
 
 	startup = execProbe(ping, startupFailureThreshold, probeTimeoutSeconds)
 	liveness = execProbe(ping, defaultFailureThreshold, probeTimeoutSeconds)
-
-	// Readiness: PING succeeds AND cluster_state is ok (cluster mode). A shell
-	// wrapper keeps liveness independent while readiness reflects cluster_state.
-	readinessCmd := []string{
-		"sh", "-c",
-		fmt.Sprintf("%s PING | grep -q PONG && %s CLUSTER INFO | grep -q cluster_state:ok",
-			shellJoin(cli), shellJoin(cli)),
-	}
-	readiness = &corev1.Probe{
-		InitialDelaySeconds: probeInitialDelaySeconds,
-		PeriodSeconds:       probePeriodSeconds,
-		FailureThreshold:    defaultFailureThreshold,
-		TimeoutSeconds:      readinessTimeoutSeconds,
-		SuccessThreshold:    1,
-		ProbeHandler: corev1.ProbeHandler{
-			Exec: &corev1.ExecAction{Command: readinessCmd},
-		},
-	}
+	readiness = execProbe(ping, defaultFailureThreshold, readinessTimeoutSeconds)
 	return startup, liveness, readiness
 }
 

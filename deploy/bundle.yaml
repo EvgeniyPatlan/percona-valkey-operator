@@ -8830,13 +8830,6 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - events
-  verbs:
-  - create
-  - patch
-- apiGroups:
-  - ""
-  resources:
   - persistentvolumeclaims/status
   verbs:
   - get
@@ -8849,6 +8842,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -8860,6 +8861,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - batch
@@ -8965,7 +8974,7 @@ metadata:
   namespace: valkey-operator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
+  kind: ClusterRole
   name: valkey-operator
 subjects:
 - kind: ServiceAccount
