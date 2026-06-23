@@ -35,8 +35,8 @@ import (
 // file at GOOGLE_APPLICATION_CREDENTIALS, or its contents passed inline via
 // GOOGLE_APPLICATION_CREDENTIALS_JSON (the StorageConfig.Credentials convention).
 const (
-	envGoogleAppCreds     = "GOOGLE_APPLICATION_CREDENTIALS"
-	envGoogleAppCredsJSON = "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+	envGoogleAppCreds     = "GOOGLE_APPLICATION_CREDENTIALS"      //#nosec G101 -- env-var name, not a hardcoded credential
+	envGoogleAppCredsJSON = "GOOGLE_APPLICATION_CREDENTIALS_JSON" //#nosec G101 -- env-var name, not a hardcoded credential
 )
 
 // init wires the GCS backend into the constructor seam (config.go).

@@ -14,6 +14,12 @@
 # (default GA matrix; arch 10 §2.1). CGO is off so the cross-compile is pure-Go;
 # BUILDPLATFORM keeps the compile native and Go cross-compiles to TARGET*.
 
+# VALKEY_BASE_IMAGE must be declared in the GLOBAL scope (before the first FROM) to be
+# usable in the runtime FROM below: an ARG referenced by a FROM that is declared inside
+# a build stage is treated as blank by buildx ("base name should not be blank"). Defaults
+# to the upstream image; override with --build-arg VALKEY_BASE_IMAGE=... for the Percona base.
+ARG VALKEY_BASE_IMAGE=valkey/valkey:8-alpine
+
 # --- builder ---------------------------------------------------------------
 FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 ARG TARGETOS
@@ -47,10 +53,9 @@ RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
       go build -trimpath -ldflags "${GO_LDFLAGS}" -o /out/peer-list     ./cmd/peer-list
 
 # --- runtime ---------------------------------------------------------------
-# Base defaults to a placeholder upstream image; the real Valkey engine image is
-# supplied at build time once the percona/percona-valkey base exists. Set with
-# `make build-server VALKEY_BASE_IMAGE=...`.
-ARG VALKEY_BASE_IMAGE=valkey/valkey:8-alpine
+# Base is the global VALKEY_BASE_IMAGE ARG declared at the top (so it is valid in this
+# FROM); the real Valkey engine image is supplied at build time once the
+# percona/percona-valkey base exists. Set with `make build-server VALKEY_BASE_IMAGE=...`.
 FROM ${VALKEY_BASE_IMAGE}
 
 ARG VERSION=dev

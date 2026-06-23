@@ -33,11 +33,14 @@ jobs:
           go-version-file: .go-version
           cache: true
       - name: gosec
-        uses: securego/gosec@v2.21.4
-        with:
-          # -severity high makes only HIGH findings fail the job; -no-fail would
-          # downgrade to advisory. HIGH is PR-blocking per §6.1.
-          args: -severity high ./...
+        # Install + run gosec with the runner's Go (from setup-go above) rather than the
+        # securego/gosec container action, whose bundled Go (1.23.x, GOTOOLCHAIN=local)
+        # refuses this module's `go 1.26` directive and fails to load every package.
+        # This mirrors the `make scan-gosec` target so local and CI red/green agree.
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.21.4
+          # -severity high makes only HIGH findings fail the job; HIGH is PR-blocking (§6.1).
+          "$(go env GOPATH)/bin/gosec" -severity high ./...
 
   govulncheck:
     name: govulncheck (advisory)

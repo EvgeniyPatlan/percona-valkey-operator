@@ -71,7 +71,7 @@ const (
 	EnvAuthUser = "VALKEY_BACKUP_AUTH_USER"
 	// EnvAuthPassword is the env-var NAME the Job reads the auth password from; its
 	// VALUE is supplied by a mounted-Secret env entry, never embedded here.
-	EnvAuthPassword = "VALKEY_BACKUP_AUTH_PASSWORD"
+	EnvAuthPassword = "VALKEY_BACKUP_AUTH_PASSWORD" //#nosec G101 -- env-var name, not a hardcoded credential
 	// EnvTLSEnabled is "true" when the Job must use TLS to talk to Valkey.
 	EnvTLSEnabled = "VALKEY_BACKUP_TLS"
 	// EnvTLSCAFile is the mounted CA bundle path for engine TLS.

@@ -39,7 +39,7 @@ func (r *Reconciler) verifyAndMarkReady(
 	wantPerShard := 1 + int(cluster.Spec.Replicas)
 
 	shards := slotOwningShards(state)
-	cluster.Status.Shards = int32(len(shards))
+	cluster.Status.Shards = int32(len(shards)) //#nosec G115 -- bounded shard count, cannot overflow int32
 	cluster.Status.ReadyShards = countReadyShards(state, wantPerShard)
 
 	slotsCovered := len(state.GetUnassignedSlots()) == 0

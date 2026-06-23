@@ -433,7 +433,7 @@ func hydrateFromManifest(bk *valkeyv1alpha1.PerconaValkeyBackup, man backup.Mani
 	shards := make([]valkeyv1alpha1.ShardBackupStatus, 0, len(man.Shards))
 	for _, s := range man.Shards {
 		shards = append(shards, valkeyv1alpha1.ShardBackupStatus{
-			ShardIndex: int32(s.Index),
+			ShardIndex: int32(s.Index), //#nosec G115 -- bounded shard index, cannot overflow int32
 			SlotRange:  s.SlotRanges,
 			RDBObject:  s.RDBKey,
 			SizeBytes:  s.SizeBytes,

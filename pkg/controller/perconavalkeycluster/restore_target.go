@@ -108,7 +108,7 @@ func restoreSourceForNode(cluster *valkeyv1alpha1.PerconaValkeyCluster, key node
 	rs := &valkeyv1alpha1.RestoreSource{
 		Storage:     storageName,
 		BackupName:  backupName,
-		ShardIndex:  int32(key.shard),
+		ShardIndex:  int32(key.shard), //#nosec G115 -- bounded shard index, cannot overflow int32
 		ClusterName: cluster.Annotations[annSourceCluster],
 	}
 	// Resolve the named storage's full coordinates + credentials Secret from the

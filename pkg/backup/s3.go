@@ -40,8 +40,8 @@ import (
 // env under these names; StorageConfig.Credentials carries the VALUES.
 const (
 	envAWSAccessKeyID     = "AWS_ACCESS_KEY_ID"
-	envAWSSecretAccessKey = "AWS_SECRET_ACCESS_KEY"
-	envAWSSessionToken    = "AWS_SESSION_TOKEN"
+	envAWSSecretAccessKey = "AWS_SECRET_ACCESS_KEY" //#nosec G101 -- env-var name, not a hardcoded credential
+	envAWSSessionToken    = "AWS_SESSION_TOKEN"     //#nosec G101 -- env-var name, not a hardcoded credential
 )
 
 // init wires the S3 backend into the constructor seam (config.go).

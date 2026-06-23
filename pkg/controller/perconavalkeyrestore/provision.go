@@ -121,7 +121,7 @@ func (r *Reconciler) createTargetCluster(
 	spec, _ := clusterTemplate(rst)
 	// Shards always match the manifest topology (06 §7.1 — must equal or be
 	// inherited); the exact slot map is reproduced from the manifest at re-form.
-	spec.Shards = int32(len(man.Shards))
+	spec.Shards = int32(len(man.Shards)) //#nosec G115 -- bounded shard count, cannot overflow int32
 
 	cluster := &valkeyv1alpha1.PerconaValkeyCluster{
 		ObjectMeta: metav1.ObjectMeta{

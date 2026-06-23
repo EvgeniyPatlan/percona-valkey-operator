@@ -65,7 +65,7 @@ func operatorVersion() string { return version.Version() }
 const (
 	// envWebhookCertSecret names the webhook serving-cert Secret to gate on. Unset
 	// => no webhook configured => the startup gate is skipped entirely.
-	envWebhookCertSecret = "WEBHOOK_CERT_SECRET"
+	envWebhookCertSecret = "WEBHOOK_CERT_SECRET" //#nosec G101 -- env-var name, not a hardcoded credential
 	// envWebhookCertNamespace overrides the namespace of the webhook-cert Secret.
 	// Defaults to POD_NAMESPACE when unset.
 	envWebhookCertNamespace = "WEBHOOK_CERT_SECRET_NAMESPACE"
