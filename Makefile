@@ -208,7 +208,7 @@ e2e-test: lint-csv ## Run the kuttl e2e suite (TEST=<name> for one case; needs k
 # on CI (.github/workflows/scan.yml). (docs/architecture/11-testing-qa.md §6.1)
 GOSEC               ?= $(LOCALBIN)/gosec
 GOVULNCHECK         ?= $(LOCALBIN)/govulncheck
-GOSEC_VERSION       ?= v2.21.4
+GOSEC_VERSION       ?= v2.27.1
 GOVULNCHECK_VERSION ?= latest
 
 .PHONY: scan

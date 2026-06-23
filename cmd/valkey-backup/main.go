@@ -269,7 +269,9 @@ func connSecurityFromEnv() (authCreds, *tls.Config, error) {
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	caFile := os.Getenv(envTLSCAFile)
 	if caFile != "" {
-		caData, err := os.ReadFile(caFile)
+		// caFile is an operator-injected mounted CA path (env VALKEY_BACKUP_TLS_CA_FILE),
+		// not external/attacker input, so this read is not a path-traversal vector.
+		caData, err := os.ReadFile(caFile) //#nosec G703
 		if err != nil {
 			return auth, nil, fmt.Errorf("read TLS CA %s: %w", caFile, err)
 		}
