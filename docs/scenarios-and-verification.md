@@ -554,7 +554,9 @@ The `REASON` column is your main clue — every value is explained in
 ```bash
 # kill a primary and watch it recover:
 PRIMARY=$(kubectl -n "$NS" get vkn -l "valkey.percona.com/cluster=$CL" \
-  -o jsonpath='{range .items[?(@.status.role=="primary")]}{.status.pod}{"\n"}{end}' | head -1)
+  -o jsonpath='{range .items[?(@.status.role=="primary")]}{.status.podName}{"\n"}{end}' | head -1)
+# (the ValkeyNode pod field is .status.podName; if your kubectl's ?() filter misbehaves,
+#  this table-parse is equivalent: kubectl -n "$NS" get vkn -l valkey.percona.com/cluster=$CL --no-headers | awk '$3=="primary"{print $4; exit}')
 kubectl -n "$NS" delete pod "$PRIMARY"
 ```
 **✅ Worked when:** it returns to Ready on its own and a replica was promoted:
